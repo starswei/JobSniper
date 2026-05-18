@@ -270,7 +270,8 @@ def _build_list_url(platform: str, keyword: str, city_id: str, pages: str, test:
             params["joblens_test"] = "1"
         if debug:
             params["debug"] = "1"
-        return f"https://www.zhipin.com/web/geek/job?{urlencode(params)}"
+        params["_t"] = str(int(time.time()))
+        return f"https://www.zhipin.com/web/geek/jobs?{urlencode(params)}"
 
     params = {
         "kw": keyword,
