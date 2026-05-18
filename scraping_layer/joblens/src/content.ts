@@ -1803,14 +1803,15 @@ declare global {
         while (card && card !== document.body && depth < 12) {
             const text = cleanText(card.innerText);
             const hasCompanyLink = Boolean(card.querySelector("a[href*='/gongsi/'], a[href*='/company/']"));
-            const hasSalary = /[-Kk薪]/.test(card.innerText);
+            // Check both innerText and innerHTML — PUA font chars may be invisible in innerText
+            const hasSalary = /[-Kk薪]/.test(card.innerText) || /[-Kk薪]/.test(card.innerHTML);
             if (text && text.length >= 30 && text.length <= 1500 && hasCompanyLink && hasSalary) {
                 return card;
             }
             card = card.parentElement;
             depth++;
         }
-        return anchor.closest("li, [class*='job-card'], [class*='jobCard'], [class*='job-item'], [class*='jobItem']") as HTMLElement | null;
+        return anchor.closest("li, [class*='job-card'], [class*='jobCard'], [class*='job-item'], [class*='jobItem'], [class*='job-info'], [class*='jobInfo']") as HTMLElement | null;
     }
 
     // Decode all BOSS font-encrypted chars in a string using BOSS_FONT_MAP
@@ -1895,20 +1896,24 @@ declare global {
         });
     }
 
-    function getBossNextPageUrl(): string | null {
-        const nextBtn = document.querySelector('[class*="next"], .options-pages a:last-child, [title="下一页"]') as HTMLAnchorElement | null;
-        if (!nextBtn || nextBtn.classList.contains('disabled') || nextBtn.getAttribute('aria-disabled') === 'true') return null;
-        const href = nextBtn.getAttribute('href');
-        if (!href) return null;
-        return new URL(href, window.location.href).toString();
-    }
-
-    async function handleBossPagination(): Promise<boolean> {
-        const nextUrl = getBossNextPageUrl();
-        if (!nextUrl) return false;
-        await new Promise(r => setTimeout(r, 5000));
-        window.location.replace(nextUrl);
-        return true;
+    async function bossAutoScroll(overlay?: HTMLElement) {
+        let lastHeight = document.body.scrollHeight;
+        let sameHeightCount = 0;
+        const maxScrolls = isHarvestTestMode() ? 6 : 30;
+        let scrollCount = 0;
+        while (sameHeightCount < 4 && scrollCount < maxScrolls) {
+            await scanAndHarvestBoss(overlay);
+            window.scrollBy(0, 1500);
+            window.dispatchEvent(new Event('scroll'));
+            await new Promise(r => setTimeout(r, 1500));
+            const currentHeight = document.body.scrollHeight;
+            if (currentHeight === lastHeight) sameHeightCount++;
+            else { sameHeightCount = 0; lastHeight = currentHeight; }
+            scrollCount++;
+            if (overlay) overlay.innerText = `Joblens (${harvesterVersion})\n已捕获：${harvestedJobs.size} 个岗位...`;
+        }
+        await scanAndHarvestBoss(overlay);
+        window.scrollTo(0, 0);
     }
 
     // --- BOSS直聘 detail page parsing ---
@@ -2096,11 +2101,11 @@ declare global {
                 const isBatch = isKeywordBatchMode();
                 if (isBatch) await advanceKeywordBatch(overlay);
             } else if (isBossPage) {
-                await scanAndHarvestBoss(overlay);
+                await bossAutoScroll(overlay);
                 await triggerBossFinalSave(true, overlay);
-                const hasNext = await handleBossPagination();
-                if (!hasNext && overlay) {
-                    // pagination exhausted — already saved by triggerBossFinalSave
+                if (isListQueueMode()) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    await chrome.runtime.sendMessage({ action: "closeCurrentTab" });
                 }
             }
         }, 3000);
