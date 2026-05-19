@@ -409,8 +409,8 @@ def _target_for_joblens_output(file_path: Path, keyword: str, task: dict[str, st
 
     return None
 
-def _unique_target_path(target: Path) -> Path:
-    if not target.exists():
+def _unique_target_path(target: Path, overwrite: bool = False) -> Path:
+    if overwrite or not target.exists():
         return target
     stem = target.stem
     suffix = target.suffix
@@ -761,7 +761,8 @@ def archive_joblens_outputs(
         if target is None:
             skipped.append({"file": str(file_path), "reason": "unrecognized Joblens output pattern"})
             continue
-        final_target = _unique_target_path(target)
+        is_index = target.stem.startswith("_岗位索引表") or target.stem.startswith("_关键词发现结果")
+        final_target = _unique_target_path(target, overwrite=is_index)
         planned.append({
             "source": str(file_path),
             "target": str(final_target),
