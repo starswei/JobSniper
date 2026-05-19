@@ -191,6 +191,11 @@ declare global {
         return params.get("detail") === "1";
     }
 
+    function isBossCompanyMode(): boolean {
+        const params = new URLSearchParams(window.location.search);
+        return params.get("joblens_company") === "1";
+    }
+
     function isDetailQueueWakeMode(): boolean {
         const params = new URLSearchParams(window.location.search);
         return params.get("joblens_detail_queue") === "1";
@@ -2060,14 +2065,19 @@ declare global {
             }
         }
 
-        // Collect company page after detail succeeds
+        // Navigate to company page for collection (iframe blocked by X-Frame-Options)
         if (markdownResp?.success && detail.companyUrl) {
-            await collectBossCompanyPage(detail.companyUrl, keyword, job.company, job.title, timestamp, overlay);
+            const separator = detail.companyUrl.includes('?') ? '&' : '?';
+            const companyCollectUrl = `${detail.companyUrl}${separator}joblens_company=1&kw=${encodeURIComponent(keyword)}&jt=${encodeURIComponent(job.title)}&jc=${encodeURIComponent(job.company)}&ts=${timestamp}`;
+            if (overlay) overlay.innerText = `✅ 详情已保存\n正在跳转到公司主页...`;
+            await new Promise(r => setTimeout(r, 1000));
+            window.location.replace(companyCollectUrl);
+            return;
         }
 
         if (markdownResp?.success) {
             overlay.style.background = "green";
-            overlay.innerText = `✅ BOSS详情+公司采集完成\n${job.company}\n${job.title}`;
+            overlay.innerText = `✅ BOSS详情采集完成\n${job.company}\n${job.title}`;
         } else {
             overlay.style.background = "#9a3412";
             overlay.innerText = `详情文件下载失败：${markdownResp?.error || "未知错误"}`;
@@ -2154,38 +2164,28 @@ declare global {
         return content;
     }
 
-    async function collectBossCompanyPage(companyUrl: string, keyword: string, jobCompany: string, jobTitle: string, timestamp: string, overlay?: HTMLElement): Promise<boolean> {
-        return new Promise<boolean>((resolve) => {
-            const iframe = document.createElement('iframe');
-            iframe.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px;';
-            iframe.src = companyUrl;
-            let settled = false;
-            const done = (ok: boolean) => { if (!settled) { settled = true; resolve(ok); } };
-            const timer = setTimeout(() => { if (!settled) try { document.body.removeChild(iframe); } catch {} done(false); }, 25000);
-            iframe.onload = async () => {
-                try {
-                    // Wait for SPA to render
-                    await new Promise(r => setTimeout(r, 4000));
-                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
-                    if (!doc) { clearTimeout(timer); done(false); return; }
-                    const info = parseBossCompanyPage(doc);
-                    if (overlay) overlay.innerText = `✅ BOSS详情采集完成\n${jobCompany}\n${jobTitle}\n正在保存公司信息...`;
-                    const sanitizedCompany = sanitizeArtifactNamePart(info.companyName || jobCompany, 'unknown_company');
-                    const companyFileName = `BOSS_COMPANY_${sanitizedCompany}_${timestamp}.md`;
-                    const metadata = { platform: 'boss-company', keyword, url: companyUrl, collectedAt: new Date().toISOString() };
-                    await downloadTextFile(companyFileName, createBossCompanyMarkdown(info, keyword, jobCompany, jobTitle, companyUrl, metadata), 'text/markdown', true);
-                    if (overlay) overlay.innerText = `✅ BOSS详情+公司采集完成\n${jobCompany}\n${jobTitle}`;
-                    clearTimeout(timer);
-                    try { document.body.removeChild(iframe); } catch {}
-                    done(true);
-                } catch (e) {
-                    clearTimeout(timer);
-                    try { document.body.removeChild(iframe); } catch {}
-                    done(false);
-                }
-            };
-            document.body.appendChild(iframe);
-        });
+    async function exportBossCompanyResult(overlay: HTMLElement) {
+        const params = new URLSearchParams(window.location.search);
+        const keyword = params.get('kw') || '';
+        const jobTitle = params.get('jt') || '';
+        const jobCompany = params.get('jc') || '';
+        const timestamp = params.get('ts') || new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+        const companyUrl = window.location.href.split('?')[0];
+
+        if (overlay) overlay.innerText = `正在采集公司主页...\n${jobCompany}`;
+        await new Promise(r => setTimeout(r, 3000)); // Wait for SPA render
+        const info = parseBossCompanyPage(document);
+        const sanitizedCompany = sanitizeArtifactNamePart(info.companyName || jobCompany, 'unknown_company');
+        const companyFileName = `BOSS_COMPANY_${sanitizedCompany}_${timestamp}.md`;
+        const metadata = { platform: 'boss-company', keyword, url: companyUrl, collectedAt: new Date().toISOString() };
+        await downloadTextFile(companyFileName, createBossCompanyMarkdown(info, keyword, jobCompany, jobTitle, companyUrl, metadata), 'text/markdown', true);
+
+        if (overlay) {
+            overlay.style.background = "green";
+            overlay.innerText = `✅ BOSS公司采集完成\n${info.companyName || jobCompany}`;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); });
     }
 
     // Main entry point logic...
@@ -2212,7 +2212,14 @@ declare global {
         }
     }
 
-    const isAuto = window.location.href.includes('joblens_auto=1') && !isKeywordDiscoveryMode() && !isDirectJobDetailMode();
+    if (isBossCompanyMode()) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;top:10px;right:10px;background:#2563eb;color:white;padding:20px;z-index:999999;font-weight:bold;border-radius:10px;';
+        document.body.appendChild(overlay);
+        setTimeout(() => exportBossCompanyResult(overlay), 4000);
+    }
+
+    const isAuto = window.location.href.includes('joblens_auto=1') && !isKeywordDiscoveryMode() && !isDirectJobDetailMode() && !isBossCompanyMode();
     if (isAuto) {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;top:10px;right:10px;background:red;color:white;padding:20px;z-index:999999;font-weight:bold;border-radius:10px;';
