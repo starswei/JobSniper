@@ -1921,6 +1921,7 @@ declare global {
     type BossDetailResult = {
         status: "success" | "failed";
         jobUrl: string;
+        companyUrl?: string;
         detailTitle?: string;
         detailTags?: string[];
         salary?: string;
@@ -1961,11 +1962,13 @@ declare global {
             // Company: prefer the sider-company link (always the correct company),
             // fall back to smallbanner info, never match similar-jobs sidebar
             let company = '';
+            let companyUrl = '';
             let companyEl = document.querySelector('.sider-company .company-info a, .sider-company [class*="company-name"]') as HTMLElement | null;
             if (!companyEl || !cleanText(companyEl.innerText)) {
                 companyEl = document.querySelector('.smallbanner .detail-op .info') as HTMLElement | null;
             }
             if (companyEl) {
+                companyUrl = ((companyEl as HTMLAnchorElement).href || '').split('?')[0];
                 // .sider-company link: textContent is just the company name
                 // .smallbanner .info: first text node is the company name;
                 //    textContent/innerText include child elements (查看所有职位, download-app)
@@ -1985,7 +1988,7 @@ declare global {
             const address = cleanText(addrEl?.innerText);
 
             return {
-                status: "success", jobUrl,
+                status: "success", jobUrl, companyUrl,
                 detailTitle: title, detailTags: tags, salary,
                 companyName: company, workAddress: address,
                 descriptionText: description,
@@ -2029,7 +2032,7 @@ declare global {
         const job = {
             title: detail.detailTitle || document.title || "未知岗位",
             company: detail.companyName || "未知公司",
-            companyUrl: window.location.origin,
+            companyUrl: detail.companyUrl || window.location.origin,
             area: detail.workAddress || "未知",
             salary: detail.salary || "未知",
             exp: "未知", edu: "未知",
@@ -2057,9 +2060,14 @@ declare global {
             }
         }
 
+        // Collect company page after detail succeeds
+        if (markdownResp?.success && detail.companyUrl) {
+            await collectBossCompanyPage(detail.companyUrl, keyword, job.company, job.title, timestamp, overlay);
+        }
+
         if (markdownResp?.success) {
             overlay.style.background = "green";
-            overlay.innerText = `✅ BOSS详情采集完成\n${job.company}\n${job.title}`;
+            overlay.innerText = `✅ BOSS详情+公司采集完成\n${job.company}\n${job.title}`;
         } else {
             overlay.style.background = "#9a3412";
             overlay.innerText = `详情文件下载失败：${markdownResp?.error || "未知错误"}`;
@@ -2080,6 +2088,104 @@ declare global {
         content += `## 详情岗位标签\n\n${detail.detailTags?.length ? detail.detailTags.map(tag => `- ${tag}`).join("\n") : "- 未提供"}\n\n`;
         content += `## 职位详情全文\n\n${detail.descriptionText || "未知"}\n\n`;
         return content;
+    }
+
+    // --- BOSS直聘 company page collection ---
+
+    type BossCompanyInfo = {
+        companyName: string;
+        stage: string;
+        scale: string;
+        industry: string;
+        description: string;
+        address: string;
+        logoUrl: string;
+        rawText: string;
+    };
+
+    function parseBossCompanyPage(doc: Document): BossCompanyInfo {
+        const bodyText = (doc.body?.innerText || '').slice(0, 5000);
+        // Structured extraction from company page sidebar / main content
+        const name = cleanText(
+            doc.querySelector('.company-header .name, .company-info .name, h1, [class*="companyName"]')?.textContent || ''
+        );
+        let stage = cleanText(
+            doc.querySelector('.sider-company .icon-stage, [class*="icon-stage"]')?.parentElement?.textContent || ''
+        );
+        if (!stage) {
+            const m = bodyText.match(/(已上市|未融资|天使轮|[AB]\d*轮|IPO|Pre-IPO|战略融资|不需要融资)/);
+            stage = m ? m[1] : '';
+        }
+        let scale = cleanText(
+            doc.querySelector('.sider-company .icon-scale, [class*="icon-scale"]')?.parentElement?.textContent || ''
+        );
+        if (!scale) {
+            const m = bodyText.match(/(\d+-\d+人|\d+人以上)/);
+            scale = m ? m[1] : '';
+        }
+        let industry = cleanText(
+            doc.querySelector('.sider-company .icon-industry, [class*="icon-industry"]')?.parentElement?.textContent || ''
+        );
+        if (!industry) {
+            const m = bodyText.match(/(?:行业|industry)\s*[:：]\s*([^\n]{2,20})/i);
+            industry = m ? m[1] : '';
+        }
+        const desc = cleanText(
+            doc.querySelector('.company-description, .job-sec-text, [class*="company-desc"], [class*="description"]')?.textContent || ''
+        );
+        const addr = cleanText(
+            doc.querySelector('.location-address, [class*="location-address"], [class*="company-address"]')?.textContent || ''
+        );
+        const logo = (doc.querySelector('.company-header img, .company-info img, .company-logo img') as HTMLImageElement)?.src || '';
+        return { companyName: name, stage, scale, industry, description: desc, address: addr, logoUrl: logo, rawText: bodyText };
+    }
+
+    function createBossCompanyMarkdown(info: BossCompanyInfo, keyword: string, jobCompany: string, jobTitle: string, companyUrl: string, metadata: any): string {
+        let content = `---\nsource: boss-company\nkeyword: ${keyword}\ncompany: ${info.companyName || jobCompany}\njobTitle: ${jobTitle}\nurl: ${companyUrl}\ncollected: ${metadata.collectedAt}\n---\n\n`;
+        content += `# ${info.companyName || jobCompany}\n\n`;
+        content += `- 来源：BOSS直聘公司主页\n- 招聘岗位：${jobTitle}\n`;
+        content += `- 公司：${info.companyName || jobCompany}\n`;
+        content += `- 阶段：${info.stage || '未知'}\n- 规模：${info.scale || '未知'}\n- 行业：${info.industry || '未知'}\n`;
+        if (info.address) content += `- 地址：${info.address}\n`;
+        if (info.logoUrl) content += `- Logo：[查看](${info.logoUrl})\n`;
+        content += `- 公司链接：${companyUrl}\n- 时间：${new Date().toLocaleString()}\n\n`;
+        if (info.description) content += `## 公司介绍\n\n${info.description}\n\n`;
+        content += `## 公司主页全文\n\n${info.rawText}\n\n`;
+        return content;
+    }
+
+    async function collectBossCompanyPage(companyUrl: string, keyword: string, jobCompany: string, jobTitle: string, timestamp: string, overlay?: HTMLElement): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+            const iframe = document.createElement('iframe');
+            iframe.style.cssText = 'position:absolute;left:-9999px;width:1px;height:1px;';
+            iframe.src = companyUrl;
+            let settled = false;
+            const done = (ok: boolean) => { if (!settled) { settled = true; resolve(ok); } };
+            const timer = setTimeout(() => { if (!settled) try { document.body.removeChild(iframe); } catch {} done(false); }, 25000);
+            iframe.onload = async () => {
+                try {
+                    // Wait for SPA to render
+                    await new Promise(r => setTimeout(r, 4000));
+                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                    if (!doc) { clearTimeout(timer); done(false); return; }
+                    const info = parseBossCompanyPage(doc);
+                    if (overlay) overlay.innerText = `✅ BOSS详情采集完成\n${jobCompany}\n${jobTitle}\n正在保存公司信息...`;
+                    const sanitizedCompany = sanitizeArtifactNamePart(info.companyName || jobCompany, 'unknown_company');
+                    const companyFileName = `BOSS_COMPANY_${sanitizedCompany}_${timestamp}.md`;
+                    const metadata = { platform: 'boss-company', keyword, url: companyUrl, collectedAt: new Date().toISOString() };
+                    await downloadTextFile(companyFileName, createBossCompanyMarkdown(info, keyword, jobCompany, jobTitle, companyUrl, metadata), 'text/markdown', true);
+                    if (overlay) overlay.innerText = `✅ BOSS详情+公司采集完成\n${jobCompany}\n${jobTitle}`;
+                    clearTimeout(timer);
+                    try { document.body.removeChild(iframe); } catch {}
+                    done(true);
+                } catch (e) {
+                    clearTimeout(timer);
+                    try { document.body.removeChild(iframe); } catch {}
+                    done(false);
+                }
+            };
+            document.body.appendChild(iframe);
+        });
     }
 
     // Main entry point logic...
