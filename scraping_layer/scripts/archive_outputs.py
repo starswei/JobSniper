@@ -83,8 +83,8 @@ def _target_for_joblens_output(file_path, keyword, task, vault_path, platform):
         return job_dir / name
     return None
 
-def _unique_target_path(target):
-    if not target.exists():
+def _unique_target_path(target, overwrite=False):
+    if overwrite or not target.exists():
         return target
     stem, suffix, parent = target.stem, target.suffix, target.parent
     counter = 1
@@ -140,7 +140,8 @@ def archive(keyword, platform="zhilian", since_minutes=60, dry_run=False, includ
         # plan and decide the final target during execution:
         # - if target exists and contents match: skip
         # - if target exists and differs: write to a unique sibling
-        final_target = _unique_target_path(target) if can_unlink_sources else target
+        is_index = target.stem.startswith("_岗位索引表") or target.stem.startswith("_关键词发现结果")
+        final_target = _unique_target_path(target, overwrite=is_index) if can_unlink_sources else target
         planned.append({"source": str(file_path), "target": str(final_target), "modified": modified.isoformat(timespec="seconds")})
 
     moved = []
@@ -163,7 +164,8 @@ def archive(keyword, platform="zhilian", since_minutes=60, dry_run=False, includ
                                 continue
                         except Exception:
                             pass
-                        target = _unique_target_path(target)
+                        is_idx = target.stem.startswith("_岗位索引表") or target.stem.startswith("_关键词发现结果")
+                        target = _unique_target_path(target, overwrite=is_idx)
                         target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(source), str(target))
                     copied.append({"source": str(source), "target": str(target)})
@@ -177,7 +179,8 @@ def archive(keyword, platform="zhilian", since_minutes=60, dry_run=False, includ
                                 continue
                         except Exception:
                             pass
-                        target = _unique_target_path(target)
+                        is_idx = target.stem.startswith("_岗位索引表") or target.stem.startswith("_关键词发现结果")
+                        target = _unique_target_path(target, overwrite=is_idx)
                         target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(source), str(target))
                     copied.append({"source": str(source), "target": str(target)})
