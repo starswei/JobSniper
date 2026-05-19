@@ -1946,25 +1946,38 @@ declare global {
 
             const jobUrl = window.location.href.split("?")[0];
 
-            const titleEl = document.querySelector('h1, [class*="job-name"], [class*="jobName"], [class*="name"]') as HTMLElement | null;
+            // Scope queries to the main content area, not the similar-jobs sidebar
+            const mainScope = document.querySelector('.job-box .job-detail, .job-banner, .smallbanner');
+
+            const titleEl = document.querySelector('.job-banner h1, .info-primary h1') as HTMLElement | null;
             const title = cleanText(titleEl?.innerText);
 
-            const salaryEl = document.querySelector('[class*="salary"], [class*="job-salary"], [class*="jobSalary"]') as HTMLElement | null;
+            const salaryEl = document.querySelector('.job-banner .salary, .info-primary .salary, .detail-box .salary') as HTMLElement | null;
             let salary = '';
             if (salaryEl) {
                 salary = decryptBossSalary(salaryEl) || extractBossSalaryFromText(cleanText(salaryEl.innerText));
             }
 
-            const companyEl = document.querySelector('[class*="company-name"], [class*="companyName"]') as HTMLElement | null;
-            const company = cleanText(companyEl?.innerText);
+            // Company: prefer the sider-company link (always the correct company),
+            // fall back to smallbanner info, never match similar-jobs sidebar
+            let company = '';
+            let companyEl = document.querySelector('.sider-company .company-info a, .sider-company [class*="company-name"]') as HTMLElement | null;
+            if (!companyEl || !cleanText(companyEl.innerText)) {
+                companyEl = document.querySelector('.smallbanner .detail-op .info') as HTMLElement | null;
+            }
+            if (companyEl) {
+                const text = cleanText(companyEl.textContent || companyEl.innerText);
+                // Extract company name from text like "上海寻梦\n查看所有职位\n..."
+                company = text.split(/[\n\r]/)[0].trim().slice(0, 80);
+            }
 
-            const tagEls = document.querySelectorAll('[class*="job-keyword"], [class*="jobKeyword"], [class*="tag-item"]');
+            const tagEls = mainScope ? mainScope.querySelectorAll('[class*="job-keyword"], [class*="jobKeyword"], [class*="tag-item"]') : [];
             const tags = Array.from(tagEls).map(el => cleanText((el as HTMLElement).innerText)).filter(Boolean);
 
-            const descEl = document.querySelector('[class*="job-sec-text"], [class*="jobSecText"], [class*="job-detail"], [class*="jobDetail"], [class*="detail-text"]') as HTMLElement | null;
+            const descEl = document.querySelector('.job-detail .job-sec-text, .job-detail [class*="jobSecText"], .job-detail [class*="detail-text"]') as HTMLElement | null;
             const description = cleanText(descEl?.innerText || document.body.innerText);
 
-            const addrEl = document.querySelector('[class*="job-address"], [class*="jobAddress"], [class*="location-address"]') as HTMLElement | null;
+            const addrEl = document.querySelector('.job-detail .location-address, .job-detail [class*="job-address"], .job-detail [class*="jobAddress"]') as HTMLElement | null;
             const address = cleanText(addrEl?.innerText);
 
             return {
