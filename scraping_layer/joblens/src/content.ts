@@ -1831,6 +1831,37 @@ declare global {
         }
         return result;
     }
+    function cleanBossAreaCandidate(area: string): string {
+        const jobNoisePattern = /\d|AI|LLM|NLP|模型|算法|开发|研发|工程师|实习|应用|岗位|方向|校招|社招/;
+        const parts = cleanText(area).split('·').filter(Boolean);
+        if (parts.length <= 2) return parts.join('·');
+        return parts
+            .filter((part, index) => index < 2 || !jobNoisePattern.test(part))
+            .join('·');
+    }
+
+    function extractBossAreaFromText(text: string): string {
+        const decoded = decodeBossFontText(cleanText(text));
+        const tailMatch = decoded.match(/(?:\d+-\d+年|经验不限|应届|在校)\s*(?:本科|大专|硕士|博士|学历不限|高中|中专)(.*)$/);
+        const searchText = tailMatch ? tailMatch[1] : decoded;
+        const candidates: string[] = [];
+        for (const city of cityNames) {
+            const cityPattern = new RegExp(`${city}(?:[·\\s\\-/|][\\u4e00-\\u9fa5A-Za-z0-9]{1,12}){0,2}`, 'g');
+            candidates.push(...(searchText.match(cityPattern) || []));
+            for (const district of cityDistricts[city]) {
+                const districtPattern = new RegExp(`${district}(?:[·\\s\\-/|][\\u4e00-\\u9fa5A-Za-z0-9]{1,12}){0,1}`, 'g');
+                candidates.push(...(searchText.match(districtPattern) || []).map(match => `${city}·${match}`));
+            }
+        }
+        const normalized = candidates
+            .map(candidate => normalizeAreaCandidate(candidate) || normalizeFreeformAreaCandidate(candidate))
+            .filter(Boolean)
+            .map(cleanBossAreaCandidate)
+            .filter(Boolean);
+        return normalized.length > 0
+            ? Array.from(new Set(normalized)).sort((a, b) => getAreaScore(b) - getAreaScore(a))[0]
+            : '';
+    }
 
     function parseBossJobCard(card: HTMLElement, anchor: HTMLAnchorElement): any {
         const title = cleanText(anchor.innerText).slice(0, 60);
@@ -1850,36 +1881,47 @@ declare global {
         const tmp = document.createElement('div');
         tmp.innerHTML = decodedHtml;
         const decodedText = cleanText(tmp.textContent || '');
-        const salaryMatch = decodedText.match(/(\d+)\s*[-~至]\s*(\d+)\s*K(?:\s*[·•]\s*\d+薪)?|(\d+)\s*K|(\d+-\d+)\s*元\/天|面议/);
+        const salaryText = decodedText.replace(title, ' ');
+        const salaryMatch = salaryText.match(/(\d+)\s*[-~至]\s*(\d+)\s*K(?:\s*[·•]\s*\d+薪)?|(\d+)\s*K|(\d+-\d+)\s*元\/天|面议/);
         salary = salaryMatch ? salaryMatch[0].replace(/\s+/g, '') : '面议';
+
+        const decodedCardText = decodedText || decodeBossFontText(cleanText(card.innerText));
 
         // Company — BOSS uses /gongsi/ not /company/
         const companyEl = card.querySelector("a[href*='/gongsi/'], a[href*='/company/']") as HTMLElement | null;
         const companyHref = (companyEl as HTMLAnchorElement)?.href || '';
-        const company = cleanText(companyEl?.textContent || '').slice(0, 80) || '未知';
+        let company = cleanText(companyEl?.textContent || '').slice(0, 80);
 
-        // Area — prefer structured selectors, avoid broad [class*="area"] matches
+        // Area — prefer structured selectors, then reuse normalized area candidates from the decoded card text.
         const areaEl = card.querySelector('.job-area, .area-link, [class*="job-area"], [class*="jobArea"], [class*="work-area"]') as HTMLElement | null;
-        let area = cleanText(areaEl?.textContent || areaEl?.innerText || '');
-        if (!area || area.length > 40) {
-            // fallback: search for city name in card text
-            const cardText = cleanText(card.innerText);
-            for (const city of cityNames) {
-                const idx = cardText.indexOf(city);
-                if (idx >= 0) {
-                    area = cardText.slice(idx, idx + 20).split(/[\n\r]/)[0].trim();
-                    break;
-                }
-            }
-        }
+        const areaText = decodeBossFontText(cleanText(areaEl?.textContent || areaEl?.innerText || ''));
+        let area = normalizeAreaCandidate(areaText) || normalizeFreeformAreaCandidate(areaText) || extractBossAreaFromText(decodedCardText);
         if (!area) area = '未知';
+
+        if (!company || company === '未知') {
+            const escapedTitle = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedSalary = salary && salary !== '面议' ? salary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+            let companyTail = decodedCardText.replace(new RegExp(`^${escapedTitle}`), '').trim();
+            if (escapedSalary) companyTail = companyTail.replace(new RegExp(escapedSalary), '').trim();
+            companyTail = companyTail
+                .replace(/^(\d+-\d+年|经验不限|应届|在校)\s*/, '')
+                .replace(/^(本科|大专|硕士|博士|学历不限|高中|中专)\s*/, '')
+                .replace(area !== '未知' ? area : '', '')
+                .trim();
+            company = companyTail.slice(0, 80) || '未知';
+        }
 
         const tags = Array.from(card.querySelectorAll('[class*="tag"], [class*="Tag"], [class*="label"], [class*="Label"]'))
             .map(el => cleanText((el as HTMLElement).innerText))
             .filter(Boolean)
             .filter(t => t.length <= 24);
 
-        return { title, url, salary, company, companyUrl: companyHref, area, skills: tags };
+        const expMatch = decodedCardText.match(/(经验不限|无经验|在校\/应届|应届|应届生|\d+\s*[-~至]\s*\d+\s*年|\d+\s*年以上|\d+\s*年)/);
+        const eduMatch = decodedCardText.match(/(学历不限|本科|大专|硕士|博士|中专\/中技|中专|高中|初中)/);
+        const exp = (expMatch?.[1] || '未知').replace(/\s+/g, '');
+        const edu = eduMatch?.[1] || '未知';
+
+        return { title, url, salary, company, companyUrl: companyHref, area, exp, edu, skills: tags };
     }
 
     async function scanAndHarvestBoss(overlay?: HTMLElement) {
@@ -1889,8 +1931,9 @@ declare global {
                 const anchor = link as HTMLAnchorElement;
                 const fullUrl = anchor.href.split('?')[0];
                 const title = cleanText(anchor.innerText);
+                if (!/\/job_detail\/[^/?#]+\.html$/i.test(fullUrl)) return;
                 if (harvestedJobs.has(fullUrl)) return;
-                if (title.length < 2) return;
+                if (title.length < 2 || title === '职位搜索' || title === '查看更多信息') return;
                 const card = findBossJobCard(anchor);
                 if (card) {
                     const job = parseBossJobCard(card, anchor);
@@ -2019,7 +2062,7 @@ declare global {
         const jobs = Array.from(harvestedJobs.values());
         let content = `# BOSS直聘岗位收割：${keyword}\n\n- 数量：${jobs.length}\n- 时间：${new Date().toLocaleString()}\n\n## 岗位列表\n\n`;
         jobs.forEach((r, idx) => {
-            content += `### ${idx + 1}. ${r.title}\n- 公司：${r.company || '未知'}\n- 薪资：**${r.salary}**\n- 地点：${r.area || '未知'}\n- 链接：[查看详情](${r.url})\n\n`;
+            content += `### ${idx + 1}. ${r.title}\n- 公司：${r.company || '未知'}\n- 薪资：**${r.salary}**\n- 经验：${r.exp || '未知'}\n- 学历：${r.edu || '未知'}\n- 地点：${r.area || '未知'}\n- 链接：[查看详情](${r.url})\n\n`;
         });
         const response = await downloadTextFile(fileName, content, "text/markdown", isAuto);
         if (response?.success && isAuto && overlay) { overlay.style.background = "green"; overlay.innerText = "✅ BOSS采集完成"; }
