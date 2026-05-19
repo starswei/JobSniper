@@ -632,7 +632,7 @@ async function processSingleBossDetailUrl(url: string): Promise<DetailProcessRes
 				timedOut = true;
 				cleanup();
 				resolve();
-			}, 60000);
+			}, 120000); // 120s for detail+company collection
 
 			chrome.tabs.onRemoved.addListener(handleRemoved);
 			bossCaptchaResolvers.set(tabId!, (result: DetailProcessResult) => {
@@ -648,7 +648,7 @@ async function processSingleBossDetailUrl(url: string): Promise<DetailProcessRes
 		});
 
 		if (resolvedResult) return resolvedResult;
-		if (timedOut) return { success: false, reason: 'timeout (60s)' };
+		if (timedOut) return { success: false, reason: 'timeout (120s)' };
 		return { success: true };
 	} catch (error) {
 		if (tabId) {
