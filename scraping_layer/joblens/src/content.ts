@@ -1966,9 +1966,15 @@ declare global {
                 companyEl = document.querySelector('.smallbanner .detail-op .info') as HTMLElement | null;
             }
             if (companyEl) {
-                const text = cleanText(companyEl.textContent || companyEl.innerText);
-                // Extract company name from text like "上海寻梦\n查看所有职位\n..."
-                company = text.split(/[\n\r]/)[0].trim().slice(0, 80);
+                // .sider-company link: textContent is clean
+                // .smallbanner .info: use innerText to get line-separated text (block children→\n)
+                const raw = companyEl.matches('.smallbanner .info')
+                    ? (companyEl as HTMLElement).innerText
+                    : (companyEl.textContent || (companyEl as HTMLElement).innerText);
+                const text = cleanText(raw);
+                // Take first line when innerText gives multi-line; fallback to full text
+                const firstLine = text.split(/[\n\r]/)[0].trim();
+                company = (firstLine || text).slice(0, 80);
             }
 
             const tagEls = mainScope ? mainScope.querySelectorAll('[class*="job-keyword"], [class*="jobKeyword"], [class*="tag-item"]') : [];
