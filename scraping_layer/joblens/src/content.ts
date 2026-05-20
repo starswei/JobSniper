@@ -2165,45 +2165,52 @@ declare global {
         industry: string;
         description: string;
         address: string;
-        logoUrl: string;
-        rawText: string;
+        businessInfo: Record<string, string>;
     };
 
     function parseBossCompanyPage(doc: Document): BossCompanyInfo {
-        const bodyText = (doc.body?.innerText || '').slice(0, 5000);
-        // Structured extraction from company page sidebar / main content
-        const name = cleanText(
-            doc.querySelector('.company-header .name, .company-info .name, h1, [class*="companyName"]')?.textContent || ''
-        );
-        let stage = cleanText(
-            doc.querySelector('.sider-company .icon-stage, [class*="icon-stage"]')?.parentElement?.textContent || ''
-        );
-        if (!stage) {
-            const m = bodyText.match(/(已上市|未融资|天使轮|[AB]\d*轮|IPO|Pre-IPO|战略融资|不需要融资)/);
-            stage = m ? m[1] : '';
+        // Company name: h1.name but exclude child .icon-focus ("收藏") noise
+        const h1 = doc.querySelector('h1.name, .info-primary h1.name');
+        let name = '';
+        if (h1) {
+            const clone = h1.cloneNode(true) as HTMLElement;
+            const focusEl = clone.querySelector('.icon-focus, [class*="icon-focus"], [class*="focus"]');
+            if (focusEl) focusEl.remove();
+            name = cleanText(clone.innerText);
         }
-        let scale = cleanText(
-            doc.querySelector('.sider-company .icon-scale, [class*="icon-scale"]')?.parentElement?.textContent || ''
-        );
-        if (!scale) {
-            const m = bodyText.match(/(\d+-\d+人|\d+人以上)/);
-            scale = m ? m[1] : '';
-        }
-        let industry = cleanText(
-            doc.querySelector('.sider-company .icon-industry, [class*="icon-industry"]')?.parentElement?.textContent || ''
-        );
-        if (!industry) {
-            const m = bodyText.match(/(?:行业|industry)\s*[:：]\s*([^\n]{2,20})/i);
-            industry = m ? m[1] : '';
-        }
+
+        // Stage, scale, industry from .info-primary p
+        const infoP = doc.querySelector('.info-primary .info p, .company-banner .info p');
+        const pText = cleanText(infoP?.textContent || '');
+        const stageM = pText.match(/(已上市|未融资|天使轮|[AB]\d*轮|IPO|Pre-IPO|战略融资|不需要融资)/);
+        const stage = stageM ? stageM[1] : '';
+        const scaleM = pText.match(/(\d+-\d+人|\d+人以上)/);
+        const scale = scaleM ? scaleM[1] : '';
+        const industryEl = doc.querySelector('.info-primary .info .industry-link, .info-primary .info a[href*="/i"]');
+        const industry = cleanText(industryEl?.textContent || '');
+
+        // Company description
         const desc = cleanText(
-            doc.querySelector('.company-description, .job-sec-text, [class*="company-desc"], [class*="description"]')?.textContent || ''
+            doc.querySelector('.company-info-box .text, .company-info-box .job-sec-text, .text.fold-text')?.textContent || ''
         );
+
+        // First address
         const addr = cleanText(
-            doc.querySelector('.location-address, [class*="location-address"], [class*="company-address"]')?.textContent || ''
+            doc.querySelector('.location-address')?.textContent || ''
         );
-        const logo = (doc.querySelector('.company-header img, .company-info img, .company-logo img') as HTMLImageElement)?.src || '';
-        return { companyName: name, stage, scale, industry, description: desc, address: addr, logoUrl: logo, rawText: bodyText };
+
+        // Business registration info (工商信息)
+        const businessInfo: Record<string, string> = {};
+        const bizItems = doc.querySelectorAll('.business-detail li, .company-business li');
+        bizItems.forEach(li => {
+            const labelEl = (li as HTMLElement).querySelector('.t, span');
+            const label = cleanText(labelEl?.textContent || '').replace(/\s*[：:]\s*$/, '');
+            const fullText = cleanText((li as HTMLElement).textContent || '');
+            const value = label ? fullText.slice(fullText.indexOf(labelEl?.textContent || '') + (labelEl?.textContent?.length || 0)).trim() : fullText;
+            if (label && value) businessInfo[label] = value;
+        });
+
+        return { companyName: name, stage, scale, industry, description: desc, address: addr, businessInfo };
     }
 
     function createBossCompanyMarkdown(info: BossCompanyInfo, keyword: string, jobCompany: string, jobTitle: string, companyUrl: string, metadata: any): string {
@@ -2213,10 +2220,15 @@ declare global {
         content += `- 公司：${info.companyName || jobCompany}\n`;
         content += `- 阶段：${info.stage || '未知'}\n- 规模：${info.scale || '未知'}\n- 行业：${info.industry || '未知'}\n`;
         if (info.address) content += `- 地址：${info.address}\n`;
-        if (info.logoUrl) content += `- Logo：[查看](${info.logoUrl})\n`;
         content += `- 公司链接：${companyUrl}\n- 时间：${new Date().toLocaleString()}\n\n`;
-        if (info.description) content += `## 公司介绍\n\n${info.description}\n\n`;
-        content += `## 公司主页全文\n\n${info.rawText}\n\n`;
+        if (info.description) content += `## 公司简介\n\n${info.description}\n\n`;
+        if (Object.keys(info.businessInfo).length > 0) {
+            content += `## 工商信息\n\n`;
+            for (const [key, value] of Object.entries(info.businessInfo)) {
+                content += `- **${key}** ${value}\n`;
+            }
+            content += `\n`;
+        }
         return content;
     }
 
