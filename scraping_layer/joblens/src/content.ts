@@ -2007,23 +2007,36 @@ declare global {
                 salary = decryptBossSalary(salaryEl) || extractBossSalaryFromText(cleanText(salaryEl.innerText));
             }
 
-            // Company: prefer the sider-company link (always the correct company),
-            // fall back to smallbanner info, never match similar-jobs sidebar
+            // Company: prefer sider-company links (company name + URL are reliable),
+            // fall back to smallbanner info. Never match similar-jobs sidebar.
             let company = '';
             let companyUrl = '';
-            let companyEl = document.querySelector('.sider-company .company-info a, .sider-company [class*="company-name"]') as HTMLElement | null;
-            if (!companyEl || !cleanText(companyEl.innerText)) {
-                companyEl = document.querySelector('.smallbanner .detail-op .info') as HTMLElement | null;
+            // .sider-company .company-info has two <a>: logo link first (no text),
+            // company name link second. querySelectorAll + pick one with text.
+            const siderLinks = document.querySelectorAll('.sider-company .company-info a[href*="/gongsi/"]');
+            let companyEl: HTMLElement | null = null;
+            for (const link of siderLinks) {
+                const text = cleanText((link as HTMLElement).innerText);
+                if (text) { company = text.slice(0, 80); companyEl = link as HTMLElement; break; }
             }
             if (companyEl) {
                 companyUrl = ((companyEl as HTMLAnchorElement).href || '').split('?')[0];
-                // .sider-company link: textContent is just the company name
-                // .smallbanner .info: first text node is the company name;
-                //    textContent/innerText include child elements (查看所有职位, download-app)
-                const raw = companyEl.matches('.smallbanner .info, .smallbanner .detail-op .info')
-                    ? (companyEl.childNodes[0]?.textContent || '')
-                    : (companyEl.textContent || (companyEl as HTMLElement).innerText || '');
-                company = cleanText(raw).slice(0, 80);
+            } else {
+                // Fallback: smallbanner info (div, no href)
+                companyEl = document.querySelector('.smallbanner .detail-op .info') as HTMLElement | null;
+                if (companyEl) {
+                    company = cleanText(
+                        (companyEl.childNodes[0]?.textContent || '')
+                    ).slice(0, 80);
+                    // Company URL from nearby "查看所有职位" link
+                    const allJobsLink = document.querySelector('.smallbanner .link-more[href*="/gongsi/"]') as HTMLAnchorElement | null;
+                    companyUrl = (allJobsLink?.href || '').split('?')[0];
+                }
+            }
+            if (!companyUrl) {
+                // Last resort: any sider-company link
+                const anyLink = document.querySelector('.sider-company a[href*="/gongsi/"]') as HTMLAnchorElement | null;
+                if (anyLink) companyUrl = anyLink.href.split('?')[0];
             }
 
             const tagEls = mainScope ? mainScope.querySelectorAll('[class*="job-keyword"], [class*="jobKeyword"], [class*="tag-item"]') : [];
@@ -2129,7 +2142,7 @@ declare global {
     }
 
     function createBossDetailMarkdown(job: any, detail: BossDetailResult, metadata: any): string {
-        let content = `---\nsource: boss\nkeyword: ${metadata.keyword}\ncompany: ${job.company}\ntitle: ${job.title}\nurl: ${job.url}\ncollected: ${metadata.collectedAt}\n---\n\n`;
+        let content = `---\nsource: boss\nkeyword: ${metadata.keyword}\ncompany: ${job.company}\ncompanyUrl: ${job.companyUrl || "(empty)"}\ntitle: ${job.title}\nurl: ${job.url}\ncollected: ${metadata.collectedAt}\n---\n\n`;
         content += `# ${job.company}_${job.title}\n\n`;
         content += `- 来源：BOSS直聘\n- 状态：详情页采集\n- 公司：${job.company}\n- 地点：${job.area || "未知"}\n- 薪资：${job.salary || "未知"}\n- 岗位链接：[查看详情](${job.url})\n- 采集URL：${window.location.href}\n- 时间：${new Date().toLocaleString()}\n\n`;
         content += `## 详情字段\n\n- 详情状态：${detail.status}\n`;
