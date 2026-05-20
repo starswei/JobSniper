@@ -2099,14 +2099,8 @@ declare global {
             exp: "未知", edu: "未知",
             url: detail.jobUrl || window.location.href.split("?")[0]
         };
-        const metadata = { platform: "boss", keyword, url: window.location.href, collectedAt: now.toISOString(), mode: "job_detail", harvesterVersion };
-        const companyName = sanitizeArtifactNamePart(job.company, "unknown_company");
-        const jobTitle = sanitizeArtifactNamePart(job.title, "unknown_job");
-        const markdownFileName = `BOSS_DETAIL_${companyName}_${jobTitle}_${timestamp}.md`;
 
-        const markdownResp = await downloadTextFile(markdownFileName, createBossDetailMarkdown(job, detail, metadata), "text/markdown", true);
-
-        if (!markdownResp?.success || detail.status === "failed") {
+        if (detail.status === "failed") {
             if (isCaptchaPage()) {
                 overlay.style.background = "red";
                 overlay.innerText = `⚠️ 验证码拦截！\n请手动完成人机验证`;
@@ -2119,25 +2113,39 @@ declare global {
                 chrome.runtime.sendMessage({ action: "bossLoginRequired" }).catch(() => {});
                 return;
             }
+            // Fallback: save detail-only when no company URL
+            const companyNameFb = sanitizeArtifactNamePart(job.company, "unknown_company");
+            const jobTitleFb = sanitizeArtifactNamePart(job.title, "unknown_job");
+            const fbFileName = `BOSS_DETAIL_${companyNameFb}_${jobTitleFb}_${timestamp}.md`;
+            const metadata = { platform: "boss", keyword, url: window.location.href, collectedAt: now.toISOString(), mode: "job_detail", harvesterVersion };
+            await downloadTextFile(fbFileName, createBossDetailMarkdown(job, detail, metadata), "text/markdown", true);
+            overlay.style.background = "#9a3412";
+            overlay.innerText = `详情采集失败：${detail.error || "未知错误"}`;
+            setTimeout(() => { chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); }); }, 1500);
+            return;
         }
 
-        // Navigate to company page for collection (iframe blocked by X-Frame-Options)
-        if (markdownResp?.success && detail.companyUrl) {
+        // Navigate to company page: save context to sessionStorage, then switch pages
+        if (detail.companyUrl) {
             const separator = detail.companyUrl.includes('?') ? '&' : '?';
-            const companyCollectUrl = `${detail.companyUrl}${separator}joblens_company=1&kw=${encodeURIComponent(keyword)}&jt=${encodeURIComponent(job.title)}&jc=${encodeURIComponent(job.company)}&ts=${timestamp}`;
-            if (overlay) overlay.innerText = `✅ 详情已保存\n正在跳转到公司主页...`;
+            const companyCollectUrl = `${detail.companyUrl}${separator}joblens_company=1&kw=${encodeURIComponent(keyword)}&jt=${encodeURIComponent(job.title)}&jc=${encodeURIComponent(job.company)}&ts=${timestamp}&jurl=${encodeURIComponent(job.url)}&jarea=${encodeURIComponent(job.area)}&jsal=${encodeURIComponent(job.salary)}`;
+            // Save combined context for the company page handler
+            const ctx = { job, detail, keyword, timestamp };
+            try { sessionStorage.setItem('boss_combined_collect', JSON.stringify(ctx)); } catch {}
+            if (overlay) overlay.innerText = `✅ 详情已解析\n正在跳转到公司主页...`;
             await new Promise(r => setTimeout(r, 1000));
             window.location.replace(companyCollectUrl);
             return;
         }
 
-        if (markdownResp?.success) {
-            overlay.style.background = "green";
-            overlay.innerText = `✅ BOSS详情采集完成\n${job.company}\n${job.title}`;
-        } else {
-            overlay.style.background = "#9a3412";
-            overlay.innerText = `详情文件下载失败：${markdownResp?.error || "未知错误"}`;
-        }
+        // No company URL: save detail-only
+        const metadata = { platform: "boss", keyword, url: window.location.href, collectedAt: now.toISOString(), mode: "job_detail", harvesterVersion };
+        const companyNameNo = sanitizeArtifactNamePart(job.company, "unknown_company");
+        const jobTitleNo = sanitizeArtifactNamePart(job.title, "unknown_job");
+        const noCompanyFileName = `BOSS_DETAIL_${companyNameNo}_${jobTitleNo}_${timestamp}.md`;
+        await downloadTextFile(noCompanyFileName, createBossDetailMarkdown(job, detail, metadata), "text/markdown", true);
+        overlay.style.background = "green";
+        overlay.innerText = `✅ BOSS详情采集完成\n${job.company}\n${job.title}`;
         setTimeout(() => { chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); }); }, 1500);
     }
 
@@ -2233,24 +2241,47 @@ declare global {
     }
 
     async function exportBossCompanyResult(overlay: HTMLElement) {
+        // Read context from sessionStorage (saved by detail page before navigation)
+        let ctx: { job: any; detail: any; keyword: string; timestamp: string } | null = null;
+        try {
+            const raw = sessionStorage.getItem('boss_combined_collect');
+            if (raw) ctx = JSON.parse(raw);
+            sessionStorage.removeItem('boss_combined_collect');
+        } catch {}
+
         const params = new URLSearchParams(window.location.search);
-        const keyword = params.get('kw') || '';
-        const jobTitle = params.get('jt') || '';
-        const jobCompany = params.get('jc') || '';
-        const timestamp = params.get('ts') || new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+        const keyword = ctx?.keyword || params.get('kw') || '';
+        const jobTitle = ctx?.job?.title || params.get('jt') || '';
+        const jobCompany = ctx?.job?.company || params.get('jc') || '';
+        const timestamp = ctx?.timestamp || params.get('ts') || new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
         const companyUrl = window.location.href.split('?')[0];
 
         if (overlay) overlay.innerText = `正在采集公司主页...\n${jobCompany}`;
         await new Promise(r => setTimeout(r, 3000)); // Wait for SPA render
         const info = parseBossCompanyPage(document);
+
+        // Build combined markdown: detail first, then company
+        const now = new Date();
+        const metadata = { platform: "boss", keyword, url: ctx?.detail?.jobUrl || params.get('jurl') || '', collectedAt: now.toISOString(), mode: "job_detail", harvesterVersion };
         const sanitizedCompany = sanitizeArtifactNamePart(info.companyName || jobCompany, 'unknown_company');
-        const companyFileName = `BOSS_COMPANY_${sanitizedCompany}_${timestamp}.md`;
-        const metadata = { platform: 'boss-company', keyword, url: companyUrl, collectedAt: new Date().toISOString() };
-        await downloadTextFile(companyFileName, createBossCompanyMarkdown(info, keyword, jobCompany, jobTitle, companyUrl, metadata), 'text/markdown', true);
+        const sanitizedTitle = sanitizeArtifactNamePart(jobTitle, 'unknown_job');
+        const unifiedFileName = `BOSS_DETAIL_${sanitizedCompany}_${sanitizedTitle}_${timestamp}.md`;
+
+        let content = '';
+        // Detail section (from saved context)
+        if (ctx) {
+            const detailMd = createBossDetailMarkdown(ctx.job, ctx.detail, metadata);
+            content += detailMd.replace(/\n---\n\n## 职位详情全文/, '\n\n---\n\n## 职位详情全文');
+        }
+        // Company section
+        content += `\n---\n\n`;
+        content += createBossCompanyMarkdown(info, keyword, jobCompany, jobTitle, companyUrl, metadata);
+
+        await downloadTextFile(unifiedFileName, content, 'text/markdown', true);
 
         if (overlay) {
             overlay.style.background = "green";
-            overlay.innerText = `✅ BOSS公司采集完成\n${info.companyName || jobCompany}`;
+            overlay.innerText = `✅ BOSS详情+公司采集完成\n${info.companyName || jobCompany}\n${jobTitle}`;
         }
         await new Promise(r => setTimeout(r, 1000));
         chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); });
