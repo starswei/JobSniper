@@ -10,3 +10,7 @@ docs/DEV_LOG.md
 scraping_layer/joblens/node_modules/
 scraping_layer/joblens/dist/
 GEMINI.md
+*.bak
+external_downloads_pic/
+.claude/worktrees/
+scraping_layer/joblens/.claude/
