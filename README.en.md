@@ -21,13 +21,13 @@ Implemented:
 - Joblens Chrome extension integration: `scraping_layer/joblens`
 - Background queue collection through `zhilian_detail_tasks.jsonl` and `zhilian_list_tasks.jsonl`
 - Monitor scripts that inspect results JSONL files, detect completion/failure, retry when appropriate, and archive outputs
+- Configurable local paths via `JOBSNIPER_DOWNLOADS_PATH` / `JOBSNIPER_CHROME_PATH` environment variables, with automatic detection fallback
 
 Still evolving:
 
 - More recruitment platforms
 - Fuller recommendation-report and resume-generation workflows
 - Archive move behavior across Windows/WSL permission differences
-- Configurable local paths (`DOWNLOADS_PATH` / `WINDOWS_CHROME_PATH`)
 
 ## Directory Layout
 
@@ -56,6 +56,34 @@ JobSniper/
       boss_intelligence_vault/        # Reserved for BOSS
   session_layer/                      # Reports, resumes, meeting notes
 ```
+
+## Local Path Configuration
+
+The following paths support environment variable overrides with automatic detection fallback. The MCP server, monitor scripts, and archive scripts share the same resolution logic:
+
+| Environment variable | Purpose | Detection order |
+|---|---|---|
+| `JOBSNIPER_DOWNLOADS_PATH` | Downloads directory for Joblens outputs | `/mnt/d/Downloads` → `~/Downloads` → `/mnt/*/Users/*/Downloads` → `/mnt/*/Downloads` |
+| `JOBSNIPER_CHROME_PATH` | Windows-side browser executable (queue wakeup) | Common Chrome/Edge install locations → per-user Chrome installs |
+
+Example MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "jobsniper": {
+      "command": "/path/to/JobSniper/venv/bin/python",
+      "args": ["/path/to/JobSniper/mcp_server.py"],
+      "cwd": "/path/to/JobSniper",
+      "env": {
+        "JOBSNIPER_DOWNLOADS_PATH": "/mnt/c/Users/yourname/Downloads"
+      }
+    }
+  }
+}
+```
+
+> Local config file support (`.env` / `jobsniper.local.json`) is still planned.
 
 ## Data Model
 

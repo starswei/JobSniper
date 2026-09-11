@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DOWNLOADS_PATH = Path("/mnt/d/Downloads")
+DOWNLOADS_PATH = Path(os.environ.get("JOBSNIPER_DOWNLOADS_PATH", "/mnt/d/Downloads"))
 STORAGE_PATH = BASE_DIR / "storage_layer"
 POSITIONS_PATH = STORAGE_PATH / "positions"
 VAULT_PATH = POSITIONS_PATH / "zhilian_intelligence_vault"

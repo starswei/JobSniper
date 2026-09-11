@@ -13,6 +13,7 @@ import time
 import queue
 import threading
 import hashlib
+import glob
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,8 +34,50 @@ BOSS_TASKS_PATH = POSITIONS_PATH / "boss_master_tasks.json"
 SCRAPING_PATH = BASE_DIR / "scraping_layer"
 JOBLENS_PATH = SCRAPING_PATH / "joblens"
 JOBLENS_DIST_PATH = JOBLENS_PATH / "dist"
-DOWNLOADS_PATH = "/mnt/d/Downloads"
-WINDOWS_CHROME_PATH = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+# 本地路径解析：环境变量 > 自动探测 > 默认值（见 README「本地路径配置」）
+def _detect_downloads_path() -> Path:
+    """解析 Downloads 目录。
+
+    优先级：环境变量 JOBSNIPER_DOWNLOADS_PATH > 自动探测常见路径 > 默认 /mnt/d/Downloads。
+    """
+    env_value = os.environ.get("JOBSNIPER_DOWNLOADS_PATH", "").strip()
+    if env_value:
+        return Path(env_value)
+    candidates = [
+        Path("/mnt/d/Downloads"),
+        Path.home() / "Downloads",
+        *sorted(Path(p) for p in glob.glob("/mnt/*/Users/*/Downloads")),
+        *sorted(Path(p) for p in glob.glob("/mnt/*/Downloads")),
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[0]
+
+
+def _detect_windows_chrome() -> str:
+    """解析 Windows 侧浏览器可执行文件路径。
+
+    优先级：环境变量 JOBSNIPER_CHROME_PATH > 自动探测常见安装位置 > 默认 Chrome 稳定版。
+    """
+    env_value = os.environ.get("JOBSNIPER_CHROME_PATH", "").strip()
+    if env_value:
+        return env_value
+    candidates = [
+        "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+        "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe",
+        "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+        *sorted(glob.glob("/mnt/*/Users/*/AppData/Local/Google/Chrome/Application/chrome.exe")),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+
+
+DOWNLOADS_PATH = str(_detect_downloads_path())
+WINDOWS_CHROME_PATH = _detect_windows_chrome()
 MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_downloads.sh"
 LIST_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_job_list.sh"
 BOSS_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_boss_downloads.sh"

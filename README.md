@@ -21,13 +21,13 @@ JobSniper 是一个面向本地求职情报工作的 MCP Server。它把招聘�
 - Joblens Chrome 扩展集成：`scraping_layer/joblens`
 - 队列式后台采集：`zhilian_detail_tasks.jsonl` / `zhilian_list_tasks.jsonl`
 - 监视脚本：根据 results JSONL 判断完成、失败、重试和归档
+- 本地路径配置化：环境变量 `JOBSNIPER_DOWNLOADS_PATH` / `JOBSNIPER_CHROME_PATH`，未设置时自动探测常见位置
 
 仍在演进：
 
 - 更多招聘平台接入
 - 更完整的推荐报告和简历生成流水线
 - Windows/WSL 权限差异下的归档移动策略
-- 本地路径配置化（`DOWNLOADS_PATH` / `WINDOWS_CHROME_PATH`）
 
 ## 目录结构
 
@@ -56,6 +56,34 @@ JobSniper/
       boss_intelligence_vault/        # Reserved for BOSS
   session_layer/                      # Reports, resumes, meeting notes
 ```
+
+## 本地路径配置
+
+以下路径支持环境变量覆盖，未设置时自动探测常见位置，MCP Server、监视脚本与归档脚本共用同一解析逻辑：
+
+| 环境变量 | 作用 | 自动探测顺序 |
+|---|---|---|
+| `JOBSNIPER_DOWNLOADS_PATH` | Joblens 产物下载目录 | `/mnt/d/Downloads` → `~/Downloads` → `/mnt/*/Users/*/Downloads` → `/mnt/*/Downloads` |
+| `JOBSNIPER_CHROME_PATH` | Windows 侧浏览器可执行文件（唤醒队列用） | Chrome/Edge 常见安装位置 → 每用户 Chrome 安装位置 |
+
+在 MCP Client 配置中注入示例：
+
+```json
+{
+  "mcpServers": {
+    "jobsniper": {
+      "command": "/path/to/JobSniper/venv/bin/python",
+      "args": ["/path/to/JobSniper/mcp_server.py"],
+      "cwd": "/path/to/JobSniper",
+      "env": {
+        "JOBSNIPER_DOWNLOADS_PATH": "/mnt/c/Users/yourname/Downloads"
+      }
+    }
+  }
+}
+```
+
+> 本地配置文件（`.env` / `jobsniper.local.json`）支持仍在计划中。
 
 ## 数据模型
 

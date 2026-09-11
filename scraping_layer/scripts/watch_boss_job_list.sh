@@ -3,7 +3,7 @@
 # 读 results.jsonl 精确计算 done/failed, completed>=total 时自动归档, 弹窗通知
 # 依赖: bash, python3, powershell.exe
 
-WATCH_DIR="/mnt/d/Downloads"
+WATCH_DIR="${JOBSNIPER_DOWNLOADS_PATH:-/mnt/d/Downloads}"
 TASK_FILE="$WATCH_DIR/boss_list_tasks.jsonl"
 RESULTS_FILE="$WATCH_DIR/boss_list_results.jsonl"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
