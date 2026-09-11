@@ -12,9 +12,10 @@ JobSniper 是一个面向本地求职情报工作的 MCP Server。它把招聘�
 - MCP Resource：读取当前用户画像
 - MCP Resource：按自然嵌套路径读取岗位详情 Markdown
 - MCP Tool：搜索岗位详情文件
-- MCP Tool：采集智联 job menu（行业-职能-职业三级结构）
-- MCP Tool：采集智联 job list（某个职业关键词下的岗位列表）
-- MCP Tool：采集智联 job detail（某个具体岗位详情页）
+- MCP Tool：采集 job menu（行业-职能-职业三级结构），支持智联招聘
+- MCP Tool：采集 job list（某个职业关键词下的岗位列表），支持智联招聘与 BOSS 直聘
+- MCP Tool：采集 job detail（岗位详情页），支持智联招聘与 BOSS 直聘；BOSS 详情与公司信息合并为单一 Markdown 归档
+- MCP Tool：统一 `platform` 参数（`zhilian` / `boss`），各采集入口共用同一套工具签名
 - MCP Tool：归档 `D:\Downloads` 中的 Joblens 采集产物
 - MCP Tool：更新用户画像技能置信度
 - Joblens Chrome 扩展集成：`scraping_layer/joblens`
@@ -23,10 +24,10 @@ JobSniper 是一个面向本地求职情报工作的 MCP Server。它把招聘�
 
 仍在演进：
 
-- BOSS 直聘采集入口
-- 多平台统一采集抽象
+- 更多招聘平台接入
 - 更完整的推荐报告和简历生成流水线
 - Windows/WSL 权限差异下的归档移动策略
+- 本地路径配置化（`DOWNLOADS_PATH` / `WINDOWS_CHROME_PATH`）
 
 ## 目录结构
 

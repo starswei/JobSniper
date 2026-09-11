@@ -12,9 +12,10 @@ Implemented:
 - MCP resource for reading the current candidate persona
 - MCP resource for reading job-detail Markdown files by nested vault path
 - MCP tool for searching job-detail files
-- MCP tool for collecting the Zhilian job menu, organized as an industry-function-occupation tree
-- MCP tool for collecting Zhilian job lists under an occupation keyword
-- MCP tool for collecting a concrete Zhilian job detail page
+- MCP tool for collecting the job menu (industry-function-occupation tree), currently for Zhilian
+- MCP tool for collecting job lists under an occupation keyword, for both Zhilian and BOSS Zhipin
+- MCP tool for collecting a concrete job detail page, for both Zhilian and BOSS Zhipin; BOSS detail and company info are merged into a single Markdown
+- Unified `platform` argument (`zhilian` / `boss`) shared by all collection tools
 - MCP tool for archiving Joblens outputs from `D:\Downloads`
 - MCP tool for updating persona skill confidence scores
 - Joblens Chrome extension integration: `scraping_layer/joblens`
@@ -23,10 +24,10 @@ Implemented:
 
 Still evolving:
 
-- BOSS Zhipin collection entrypoints
-- Unified collection abstraction across platforms
+- More recruitment platforms
 - Fuller recommendation-report and resume-generation workflows
 - Archive move behavior across Windows/WSL permission differences
+- Configurable local paths (`DOWNLOADS_PATH` / `WINDOWS_CHROME_PATH`)
 
 ## Directory Layout
 
