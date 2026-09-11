@@ -59,7 +59,7 @@ JobSniper/
 
 ## Local Path Configuration
 
-The following paths support environment variable overrides with automatic detection fallback. The MCP server, monitor scripts, and archive scripts share the same resolution logic:
+The following paths support environment variable overrides with automatic detection fallback. The MCP server propagates the resolved paths to monitor/archive scripts, keeping queue paths consistent:
 
 | Environment variable | Purpose | Detection order |
 |---|---|---|

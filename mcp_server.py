@@ -78,6 +78,15 @@ def _detect_windows_chrome() -> str:
 
 DOWNLOADS_PATH = str(_detect_downloads_path())
 WINDOWS_CHROME_PATH = _detect_windows_chrome()
+
+
+def _script_env() -> dict[str, str]:
+    """构造监视/归档脚本的子进程环境。
+
+    将解析后的 Downloads 路径显式传给子脚本，保证 MCP Server、监视脚本、
+    归档脚本与 Joblens 队列路径一致（即使未设置环境变量、由自动探测决定路径）。
+    """
+    return {**os.environ, "JOBSNIPER_DOWNLOADS_PATH": DOWNLOADS_PATH}
 MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_downloads.sh"
 LIST_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_job_list.sh"
 BOSS_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_boss_downloads.sh"
@@ -127,6 +136,7 @@ def _start_monitor_if_needed() -> None:
             ["bash", str(MONITOR_SCRIPT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=_script_env(),
         )
     except Exception:
         pass
@@ -150,6 +160,7 @@ def _start_list_monitor_if_needed() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=_script_env(),
         )
     except Exception:
         pass
