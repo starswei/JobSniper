@@ -68,10 +68,16 @@ declare global {
         jobUrl: string;
         requestedJobUrl?: string;
         finalUrl?: string;
+        recruitmentStatus?: RecruitmentStatus;
+        recruitmentStatusLabel?: string;
+        statusCheckedAt?: string;
+        statusSource?: RecruitmentStatusSource;
+        statusEvidence?: string;
         parseSource?: "initial_state" | "dom_fallback";
         detailTitle?: string;
         detailTags?: string[];
         salary?: string;
+        companyUrl?: string;
         companyName?: string;
         workAddress?: string;
         descriptionText?: string;
@@ -94,6 +100,16 @@ declare global {
             initialStateAvailable?: boolean;
         };
         error?: string;
+    };
+
+    type CompanyPageInfo = {
+        companyName: string;
+        stage: string;
+        scale: string;
+        industry: string;
+        description: string;
+        address: string;
+        businessInfo: Record<string, string>;
     };
 
     const companyTypes = ["民营", "国企", "央企", "外企", "外商独资", "外资", "合资", "上市公司", "股份制企业", "事业单位", "社会团体", "其它", "其他"];
@@ -1468,6 +1484,7 @@ declare global {
             detailTitle,
             detailTags: extractDetailTagsFromInitialState(position),
             salary: cleanUnknownText(position.salary),
+            companyUrl: extractZhilianCompanyUrl(state),
             companyName: cleanUnknownText(company.companyName || position.companyName),
             workAddress: cleanUnknownText(position.workAddress),
             descriptionText,
@@ -1485,6 +1502,64 @@ declare global {
         };
     }
 
+    function normalizeAbsoluteUrl(value: string): string {
+        const cleaned = cleanText(value);
+        if (!cleaned) return "";
+        try {
+            return new URL(cleaned, window.location.origin).toString().split("#")[0];
+        } catch {
+            return "";
+        }
+    }
+
+    function findCompanyUrlInObject(value: unknown, depth = 0): string {
+        if (!value || depth > 5) return "";
+        if (typeof value === "string") {
+            if (/companydetail|company\.zhaopin\.com|\/company\/|\/gongsi\//i.test(value)) return normalizeAbsoluteUrl(value);
+            return "";
+        }
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const found = findCompanyUrlInObject(item, depth + 1);
+                if (found) return found;
+            }
+            return "";
+        }
+        if (typeof value !== "object") return "";
+        const record = value as Record<string, unknown>;
+        const preferredKeys = ["companyUrl", "companyURL", "companyLink", "companyHref", "companyDetailUrl", "detailUrl", "url", "href"];
+        for (const key of preferredKeys) {
+            const found = findCompanyUrlInObject(record[key], depth + 1);
+            if (found) return found;
+        }
+        for (const item of Object.values(record)) {
+            const found = findCompanyUrlInObject(item, depth + 1);
+            if (found) return found;
+        }
+        return "";
+    }
+
+    function extractZhilianCompanyUrl(initialState?: any): string {
+        const fromState = findCompanyUrlInObject(initialState);
+        if (fromState) return fromState;
+
+        const selectors = [
+            "a[href*='/companydetail/']",
+            "a[href*='company.zhaopin.com']",
+            "a[href*='/company/']",
+            "a[href*='/gongsi/']",
+            "[class*='company'] a[href]",
+            "[class*='Company'] a[href]"
+        ];
+        for (const selector of selectors) {
+            const link = document.querySelector(selector) as HTMLAnchorElement | null;
+            const href = link?.href || link?.getAttribute("href") || "";
+            const normalized = normalizeAbsoluteUrl(href);
+            if (normalized && !/\/jobdetail\//i.test(normalized)) return normalized.split("?")[0];
+        }
+        return "";
+    }
+
     function isCaptchaPage(): boolean {
         const bodyText = document.body.innerText || "";
         const title = document.title || "";
@@ -1497,21 +1572,136 @@ declare global {
         );
     }
 
+    type RecruitmentStatus = "open" | "closed" | "blocked" | "unknown";
+    type RecruitmentStatusSource = "detail_page" | "security_page" | "login_page" | "parser";
+
+    type RecruitmentStatusInfo = {
+        recruitmentStatus: RecruitmentStatus;
+        recruitmentStatusLabel: string;
+        statusCheckedAt: string;
+        statusSource: RecruitmentStatusSource;
+        statusEvidence?: string;
+    };
+
+    function getRecruitmentStatusLabel(status: RecruitmentStatus): string {
+        if (status === "open") return "招聘中";
+        if (status === "closed") return "已停止招聘";
+        if (status === "blocked") return "访问受阻";
+        return "未知";
+    }
+
+    function detectRecruitmentStatus(options: {
+        blockedReason?: string;
+        loginRequired?: boolean;
+        title?: string;
+        bodyText?: string;
+        parsedSuccessfully?: boolean;
+    } = {}): RecruitmentStatusInfo {
+        const checkedAt = new Date().toISOString();
+        if (options.blockedReason) {
+            return {
+                recruitmentStatus: "blocked",
+                recruitmentStatusLabel: getRecruitmentStatusLabel("blocked"),
+                statusCheckedAt: checkedAt,
+                statusSource: "security_page",
+                statusEvidence: options.blockedReason,
+            };
+        }
+        if (options.loginRequired) {
+            return {
+                recruitmentStatus: "blocked",
+                recruitmentStatusLabel: getRecruitmentStatusLabel("blocked"),
+                statusCheckedAt: checkedAt,
+                statusSource: "login_page",
+                statusEvidence: "login required",
+            };
+        }
+
+        const text = cleanText(`${options.title || document.title || ""}\n${options.bodyText || document.body.innerText || ""}`).slice(0, 12000);
+        const closedMatch = text.match(/停止招聘|职位已下线|职位已关闭|招聘已结束|岗位已失效|职位不存在|职位已过期|该职位暂时不可投递|职位关闭|已结束招聘|已暂停招聘|不再招聘/i);
+        if (closedMatch) {
+            return {
+                recruitmentStatus: "closed",
+                recruitmentStatusLabel: getRecruitmentStatusLabel("closed"),
+                statusCheckedAt: checkedAt,
+                statusSource: "detail_page",
+                statusEvidence: closedMatch[0],
+            };
+        }
+
+        if (options.parsedSuccessfully) {
+            return {
+                recruitmentStatus: "open",
+                recruitmentStatusLabel: getRecruitmentStatusLabel("open"),
+                statusCheckedAt: checkedAt,
+                statusSource: "detail_page",
+            };
+        }
+
+        return {
+            recruitmentStatus: "unknown",
+            recruitmentStatusLabel: getRecruitmentStatusLabel("unknown"),
+            statusCheckedAt: checkedAt,
+            statusSource: "parser",
+        };
+    }
+
+    function detectZhilianInitialStateRecruitmentStatus(state: any): RecruitmentStatusInfo | null {
+        const detailedPosition = state?.jobDetail?.detailedPosition || state?.detailedPosition || {};
+        const position = detailedPosition as Record<string, unknown>;
+        const positionStatus = cleanUnknownText(position.positionStatus);
+        const jobStatus = cleanUnknownText(position.jobStatus);
+        const publishStatus = cleanUnknownText(position.publishStatus);
+        const evidenceParts = [
+            positionStatus ? `positionStatus=${positionStatus}` : "",
+            jobStatus ? `jobStatus=${jobStatus}` : "",
+            publishStatus ? `publishStatus=${publishStatus}` : "",
+        ].filter(Boolean);
+        if (positionStatus === "4" || jobStatus === "4") {
+            return {
+                recruitmentStatus: "closed",
+                recruitmentStatusLabel: getRecruitmentStatusLabel("closed"),
+                statusCheckedAt: new Date().toISOString(),
+                statusSource: "detail_page",
+                statusEvidence: evidenceParts.join("; ") || "zhilian status code indicates closed",
+            };
+        }
+        return null;
+    }
+
+    function sanitizeFrontmatterValue(value?: string): string {
+        return cleanText(value || "").replace(/"/g, '\\"');
+    }
+
     function parseZhilianDetailPage(): ZhilianDetailResult {
         try {
             if (isCaptchaPage()) {
-                return { status: "failed", jobUrl: window.location.href.split("?")[0], error: "security verification page detected" };
+                return {
+                    status: "failed",
+                    jobUrl: window.location.href.split("?")[0],
+                    error: "security verification page detected",
+                    ...detectRecruitmentStatus({ blockedReason: "security verification page detected" }),
+                };
             }
             const initialState = parseZhilianInitialState();
             const initialStateDetail = initialState ? parseDetailFromInitialState(initialState) : null;
+            const detailTitle = initialStateDetail?.detailTitle || extractDetailTitle();
+            const companyName = initialStateDetail?.companyName;
+            const recruitmentStatus = detectZhilianInitialStateRecruitmentStatus(initialState) || detectRecruitmentStatus({
+                title: document.title,
+                bodyText: document.body.innerText,
+                parsedSuccessfully: Boolean(detailTitle && companyName),
+            });
             return {
                 status: "success",
                 jobUrl: window.location.href.split("?")[0],
+                ...recruitmentStatus,
                 parseSource: initialStateDetail?.parseSource || "dom_fallback",
-                detailTitle: initialStateDetail?.detailTitle || extractDetailTitle(),
+                detailTitle,
                 detailTags: initialStateDetail?.detailTags || [],
                 salary: initialStateDetail?.salary,
-                companyName: initialStateDetail?.companyName,
+                companyUrl: initialStateDetail?.companyUrl || extractZhilianCompanyUrl(initialState),
+                companyName,
                 workAddress: initialStateDetail?.workAddress || extractDetailWorkAddress(),
                 descriptionText: initialStateDetail?.descriptionText || extractDetailDescription(),
                 companyIntro: initialStateDetail?.companyIntro,
@@ -1524,7 +1714,12 @@ declare global {
                 }
             };
         } catch (error) {
-            return { status: "failed", jobUrl: window.location.href.split("?")[0], error: error instanceof Error ? error.message : String(error) };
+            return {
+                status: "failed",
+                jobUrl: window.location.href.split("?")[0],
+                error: error instanceof Error ? error.message : String(error),
+                ...detectRecruitmentStatus(),
+            };
         }
     }
 
@@ -1566,10 +1761,17 @@ declare global {
     }
 
     function createSingleDetailMarkdown(job: any, detail: ZhilianDetailResult, metadata: any): string {
-        let content = `---\nsource: zhilian\nkeyword: ${metadata.keyword}\ncompany: ${job.company}\ntitle: ${job.title}\nurl: ${job.url}\ncollected: ${metadata.collectedAt}\n---\n\n`;
+        const recruitmentStatus = detail.recruitmentStatus || "unknown";
+        const recruitmentStatusLabel = detail.recruitmentStatusLabel || getRecruitmentStatusLabel(recruitmentStatus);
+        const statusCheckedAt = detail.statusCheckedAt || metadata.collectedAt;
+        const statusSource = detail.statusSource || "parser";
+        const statusEvidence = sanitizeFrontmatterValue(detail.statusEvidence || "");
+        let content = `---\nsource: zhilian\nkeyword: ${metadata.keyword}\ncompany: ${job.company}\ntitle: ${job.title}\nurl: ${job.url}\ncollected: ${metadata.collectedAt}\nrecruitment_status: ${recruitmentStatus}\nrecruitment_status_label: ${recruitmentStatusLabel}\nstatus_checked_at: ${statusCheckedAt}\nstatus_source: ${statusSource}\nstatus_evidence: "${statusEvidence}"\n---\n\n`;
         content += `# ${job.company}_${job.title}\n\n`;
-        content += `- 来源：智联招聘\n- 状态：详情页采集\n- 公司：[${job.company}](${job.companyUrl})\n- 列表地点：${job.area || "未知"}\n- 列表薪资：${job.salary || "未知"}\n- 列表经验：${job.exp || "未知"}\n- 列表学历：${job.edu || "未知"}\n- 岗位链接：[查看详情](${job.url})\n- 采集URL：${window.location.href}\n- 时间：${new Date().toLocaleString()}\n\n`;
+        content += `- 来源：智联招聘\n- 状态：详情页采集\n- 招聘状态：${recruitmentStatusLabel}\n- 公司：[${job.company}](${job.companyUrl})\n- 列表地点：${job.area || "未知"}\n- 列表薪资：${job.salary || "未知"}\n- 列表经验：${job.exp || "未知"}\n- 列表学历：${job.edu || "未知"}\n- 岗位链接：[查看详情](${job.url})\n- 采集URL：${window.location.href}\n- 时间：${new Date().toLocaleString()}\n\n`;
         content += `## 详情字段\n\n- 详情状态：${detail.status}\n`;
+        content += `- 招聘状态来源：${statusSource}\n- 招聘状态检查时间：${statusCheckedAt}\n`;
+        if (detail.statusEvidence) content += `- 招聘状态证据：${detail.statusEvidence}\n`;
         if (detail.status === "failed") {
             content += `- 失败原因：${detail.error || "未知"}\n`;
             return content;
@@ -1593,7 +1795,7 @@ declare global {
         const job = {
             title: detail.detailTitle || document.title || "未知岗位",
             company: detail.companyName || "未知公司",
-            companyUrl: window.location.origin,
+            companyUrl: detail.companyUrl || "",
             area: detail.workAddress || "未知",
             salary: detail.salary || "未知",
             exp: "未知",
@@ -1630,6 +1832,18 @@ declare global {
             }
         }
 
+        const shouldCollectCompany = urlParams.get("company") !== "0";
+        if (markdownResponse?.success && detail.status === "success" && shouldCollectCompany && job.companyUrl) {
+            try {
+                sessionStorage.setItem("zhilian_company_collect", JSON.stringify({ job, keyword, timestamp, saveJson }));
+            } catch {}
+            const separator = job.companyUrl.includes("?") ? "&" : "?";
+            const companyCollectUrl = `${job.companyUrl}${separator}joblens_company=1&platform=zhilian&kw=${encodeURIComponent(keyword)}&jt=${encodeURIComponent(job.title)}&jc=${encodeURIComponent(job.company)}&ts=${timestamp}&jurl=${encodeURIComponent(job.url)}&jarea=${encodeURIComponent(job.area)}&jsal=${encodeURIComponent(job.salary)}&json=${saveJson ? "1" : "0"}`;
+            overlay.innerText = `✅ 岗位详情已保存\n正在跳转智联公司主页...\n${job.company}`;
+            window.location.replace(companyCollectUrl);
+            return;
+        }
+
         if (markdownResponse?.success) {
             overlay.style.background = "green";
             overlay.innerText = `✅ 详情采集完成\n${job.company}\n${job.title}`;
@@ -1639,6 +1853,124 @@ declare global {
         }
 
         setTimeout(() => { chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); }); }, 1500);
+    }
+
+    // --- 智联招聘 company page collection ---
+
+    function parseZhilianCompanyPage(doc: Document): CompanyPageInfo {
+        const initialState = parseZhilianInitialState();
+        const detailedCompany = initialState?.jobDetail?.detailedCompany || initialState?.detailedCompany || initialState?.company || {};
+        const businessData = initialState?.companyExtDetail?.businessInformation?.businessInformationData || {};
+        const company = detailedCompany as Record<string, unknown>;
+        const biz = businessData as Record<string, unknown>;
+
+        const titleName = cleanText(
+            doc.querySelector("h1, [class*='company-name'], [class*='companyName'], [class*='CompanyName']")?.textContent || ""
+        );
+        const companyName = cleanUnknownText(company.companyName || company.name) || titleName;
+
+        const pageText = cleanText(doc.body?.innerText || "");
+        const stage = financingStages.find(item => pageText.includes(item)) || "";
+        const scaleMatch = pageText.match(companySizePattern);
+        const scale = scaleMatch ? scaleMatch[1].replace(/\s+/g, "") : "";
+        const industry = cleanUnknownText(company.industryName || company.industry)
+            || industryCandidates.find(item => pageText.includes(item))
+            || cleanUnknownText(biz.industry);
+
+        const description = stripHtmlToReadableText(company.companyDescription || company.companyIntro)
+            || cleanText(
+                doc.querySelector("[class*='companyIntro'], [class*='company-intro'], [class*='companyDescription'], [class*='CompanyIntro'], [class*='intro'], [class*='description']")?.textContent || ""
+            );
+
+        const address = cleanUnknownText(company.address || company.companyAddress)
+            || cleanText(doc.querySelector("[class*='address'], [class*='Address']")?.textContent || "");
+
+        const businessInfo: Record<string, string> = {};
+        const registeredName = cleanUnknownText(biz.registeredName || companyName);
+        const registeredCapital = cleanUnknownText(biz.registeredCapital);
+        const legalPerson = cleanUnknownText(biz.legalPerson);
+        const setupDate = cleanUnknownText(biz.createDate);
+        const epStatus = cleanUnknownText(biz.epStatus);
+        const bizIndustry = cleanUnknownText(biz.industry);
+        const location = cleanUnknownText(biz.location);
+        const businessScope = stripHtmlToReadableText(biz.businessScope);
+        if (registeredName) businessInfo["注册名称"] = registeredName;
+        if (registeredCapital) businessInfo["注册资本"] = registeredCapital;
+        if (legalPerson) businessInfo["法定代表人"] = legalPerson;
+        if (setupDate) businessInfo["成立时间"] = setupDate;
+        if (epStatus) businessInfo["登记状态"] = epStatus;
+        if (bizIndustry) businessInfo["工商行业"] = bizIndustry;
+        if (location) businessInfo["工商地址"] = location;
+        if (businessScope) businessInfo["经营范围"] = businessScope;
+
+        const bizItems = doc.querySelectorAll("[class*='business'] li, [class*='Business'] li, [class*='工商'] li");
+        bizItems.forEach(li => {
+            const text = cleanText((li as HTMLElement).textContent || "");
+            const match = text.match(/^(.{2,12}?)[：:]\s*(.+)$/);
+            if (match) businessInfo[match[1]] = match[2];
+        });
+
+        return { companyName, stage, scale, industry, description, address, businessInfo };
+    }
+
+    function createZhilianCompanyMarkdown(info: CompanyPageInfo, keyword: string, jobCompany: string, jobTitle: string, companyUrl: string, metadata: any): string {
+        let content = `---\nsource: zhilian-company\nkeyword: ${keyword}\ncompany: ${info.companyName || jobCompany}\njobTitle: ${jobTitle}\nurl: ${companyUrl}\ncollected: ${metadata.collectedAt}\n---\n\n`;
+        content += `# ${info.companyName || jobCompany}\n\n`;
+        content += `- 来源：智联招聘公司主页\n- 招聘岗位：${jobTitle || "未知"}\n`;
+        content += `- 公司：${info.companyName || jobCompany || "未知"}\n`;
+        content += `- 阶段：${info.stage || "未知"}\n- 规模：${info.scale || "未知"}\n- 行业：${info.industry || "未知"}\n`;
+        if (info.address) content += `- 地址：${info.address}\n`;
+        content += `- 公司链接：${companyUrl}\n- 时间：${new Date().toLocaleString()}\n\n`;
+        if (info.description) content += `## 公司简介\n\n${info.description}\n\n`;
+        if (Object.keys(info.businessInfo).length > 0) {
+            content += `## 工商信息\n\n`;
+            for (const [key, value] of Object.entries(info.businessInfo)) {
+                content += `- **${key}** ${value}\n`;
+            }
+            content += `\n`;
+        }
+        return content;
+    }
+
+    async function exportZhilianCompanyResult(overlay: HTMLElement) {
+        let ctx: { job?: any; keyword?: string; timestamp?: string; saveJson?: boolean } | null = null;
+        try {
+            const raw = sessionStorage.getItem("zhilian_company_collect");
+            if (raw) ctx = JSON.parse(raw);
+            sessionStorage.removeItem("zhilian_company_collect");
+        } catch {}
+
+        const params = new URLSearchParams(window.location.search);
+        const keyword = ctx?.keyword || params.get("kw") || "";
+        const jobTitle = ctx?.job?.title || params.get("jt") || "";
+        const jobCompany = ctx?.job?.company || params.get("jc") || "";
+        const timestamp = ctx?.timestamp || params.get("ts") || new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15);
+        const companyUrl = window.location.href.split("?")[0];
+
+        overlay.innerText = `正在采集智联公司主页...\n${jobCompany}`;
+        await new Promise(r => setTimeout(r, 3000));
+        const info = parseZhilianCompanyPage(document);
+        const now = new Date();
+        const metadata = { platform: "zhilian", keyword, url: companyUrl, sourceJobUrl: params.get("jurl") || ctx?.job?.url || "", collectedAt: now.toISOString(), mode: "company_detail", harvesterVersion };
+        const sanitizedCompany = sanitizeArtifactNamePart(info.companyName || jobCompany, "unknown_company");
+        const companyId = sanitizeArtifactNamePart((companyUrl.match(/\/companydetail\/([^/?#]+)/i)?.[1] || sanitizedCompany), "company");
+        const companyFileName = `ZHILIAN_COMPANY_${sanitizedCompany}_${timestamp}.md`;
+        const companyManifestFileName = `ZHILIAN_COMPANY_MANIFEST_${timestamp}_${companyId}.json`;
+
+        const markdownResponse = await downloadTextFile(companyFileName, createZhilianCompanyMarkdown(info, keyword, jobCompany, jobTitle, companyUrl, metadata), "text/markdown", true);
+        if (ctx?.saveJson || params.get("json") === "1") {
+            await downloadTextFile(companyManifestFileName, JSON.stringify({ metadata, markdownFileName: companyFileName, job: ctx?.job || null, company: info, companyUrl }, null, 2), "application/json", true);
+        }
+
+        if (markdownResponse?.success) {
+            overlay.style.background = "green";
+            overlay.innerText = `✅ 智联公司详情采集完成\n${info.companyName || jobCompany}\n${companyFileName}`;
+        } else {
+            overlay.style.background = "#9a3412";
+            overlay.innerText = `公司详情文件下载失败：${markdownResponse?.error || "未知错误"}`;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); });
     }
 
     async function scanAndHarvest(overlay?: HTMLElement) {
@@ -1969,6 +2301,11 @@ declare global {
     type BossDetailResult = {
         status: "success" | "failed";
         jobUrl: string;
+        recruitmentStatus?: RecruitmentStatus;
+        recruitmentStatusLabel?: string;
+        statusCheckedAt?: string;
+        statusSource?: RecruitmentStatusSource;
+        statusEvidence?: string;
         companyUrl?: string;
         detailTitle?: string;
         detailTags?: string[];
@@ -1987,10 +2324,20 @@ declare global {
     function parseBossDetailPage(): BossDetailResult {
         try {
             if (isCaptchaPage()) {
-                return { status: "failed", jobUrl: window.location.href.split("?")[0], error: "security verification page detected" };
+                return {
+                    status: "failed",
+                    jobUrl: window.location.href.split("?")[0],
+                    error: "security verification page detected",
+                    ...detectRecruitmentStatus({ blockedReason: "security verification page detected" }),
+                };
             }
             if (isBossLoginWall()) {
-                return { status: "failed", jobUrl: window.location.href.split("?")[0], error: "login required" };
+                return {
+                    status: "failed",
+                    jobUrl: window.location.href.split("?")[0],
+                    error: "login required",
+                    ...detectRecruitmentStatus({ loginRequired: true }),
+                };
             }
 
             const jobUrl = window.location.href.split("?")[0];
@@ -2047,9 +2394,15 @@ declare global {
 
             const addrEl = document.querySelector('.job-detail .location-address, .job-detail [class*="job-address"], .job-detail [class*="jobAddress"]') as HTMLElement | null;
             const address = cleanText(addrEl?.innerText);
+            const recruitmentStatus = detectRecruitmentStatus({
+                title: document.title,
+                bodyText: document.body.innerText,
+                parsedSuccessfully: Boolean(title && company),
+            });
 
             return {
                 status: "success", jobUrl, companyUrl,
+                ...recruitmentStatus,
                 detailTitle: title, detailTags: tags, salary,
                 companyName: company, workAddress: address,
                 descriptionText: description,
@@ -2060,7 +2413,12 @@ declare global {
                 }
             };
         } catch (error) {
-            return { status: "failed", jobUrl: window.location.href.split("?")[0], error: error instanceof Error ? error.message : String(error) };
+            return {
+                status: "failed",
+                jobUrl: window.location.href.split("?")[0],
+                error: error instanceof Error ? error.message : String(error),
+                ...detectRecruitmentStatus(),
+            };
         }
     }
 
@@ -2150,10 +2508,17 @@ declare global {
     }
 
     function createBossDetailMarkdown(job: any, detail: BossDetailResult, metadata: any): string {
-        let content = `---\nsource: boss\nkeyword: ${metadata.keyword}\ncompany: ${job.company}\ncompanyUrl: ${job.companyUrl || "(empty)"}\ntitle: ${job.title}\nurl: ${job.url}\ncollected: ${metadata.collectedAt}\n---\n\n`;
+        const recruitmentStatus = detail.recruitmentStatus || "unknown";
+        const recruitmentStatusLabel = detail.recruitmentStatusLabel || getRecruitmentStatusLabel(recruitmentStatus);
+        const statusCheckedAt = detail.statusCheckedAt || metadata.collectedAt;
+        const statusSource = detail.statusSource || "parser";
+        const statusEvidence = sanitizeFrontmatterValue(detail.statusEvidence || "");
+        let content = `---\nsource: boss\nkeyword: ${metadata.keyword}\ncompany: ${job.company}\ncompanyUrl: ${job.companyUrl || "(empty)"}\ntitle: ${job.title}\nurl: ${job.url}\ncollected: ${metadata.collectedAt}\nrecruitment_status: ${recruitmentStatus}\nrecruitment_status_label: ${recruitmentStatusLabel}\nstatus_checked_at: ${statusCheckedAt}\nstatus_source: ${statusSource}\nstatus_evidence: "${statusEvidence}"\n---\n\n`;
         content += `# ${job.company}_${job.title}\n\n`;
-        content += `- 来源：BOSS直聘\n- 状态：详情页采集\n- 公司：${job.company}\n- 地点：${job.area || "未知"}\n- 薪资：${job.salary || "未知"}\n- 岗位链接：[查看详情](${job.url})\n- 采集URL：${window.location.href}\n- 时间：${new Date().toLocaleString()}\n\n`;
+        content += `- 来源：BOSS直聘\n- 状态：详情页采集\n- 招聘状态：${recruitmentStatusLabel}\n- 公司：${job.company}\n- 地点：${job.area || "未知"}\n- 薪资：${job.salary || "未知"}\n- 岗位链接：[查看详情](${job.url})\n- 采集URL：${window.location.href}\n- 时间：${new Date().toLocaleString()}\n\n`;
         content += `## 详情字段\n\n- 详情状态：${detail.status}\n`;
+        content += `- 招聘状态来源：${statusSource}\n- 招聘状态检查时间：${statusCheckedAt}\n`;
+        if (detail.statusEvidence) content += `- 招聘状态证据：${detail.statusEvidence}\n`;
         if (detail.status === "failed") {
             content += `- 失败原因：${detail.error || "未知"}\n`;
             return content;
@@ -2315,7 +2680,11 @@ declare global {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;top:10px;right:10px;background:#2563eb;color:white;padding:20px;z-index:999999;font-weight:bold;border-radius:10px;';
         document.body.appendChild(overlay);
-        setTimeout(() => exportBossCompanyResult(overlay), 4000);
+        if (isZhilianPage) {
+            setTimeout(() => exportZhilianCompanyResult(overlay), 4000);
+        } else if (isBossPage) {
+            setTimeout(() => exportBossCompanyResult(overlay), 4000);
+        }
     }
 
     const isAuto = window.location.href.includes('joblens_auto=1') && !isKeywordDiscoveryMode() && !isDirectJobDetailMode() && !isBossCompanyMode();

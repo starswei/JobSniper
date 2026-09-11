@@ -13,9 +13,9 @@
     "alarms"
   ],
   "host_permissions": [
+    "file:///*",
     "https://*.zhaopin.com/*",
-    "https://*.zhipin.com/*",
-    "file:///D:/Downloads/*"
+    "https://*.zhipin.com/*"
   ],
   "background": {
     "service_worker": "background.js"

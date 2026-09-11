@@ -354,23 +354,31 @@ def _validate_job_url(job_url: str, platform: str) -> tuple[bool, str]:
         return False, "boss job_url must be a zhipin.com URL"
     return True, ""
 
-def _parse_frontmatter_keyword(file_path: Path) -> str | None:
-    """从 markdown 文件 YAML frontmatter 中提取 keyword 字段。"""
+def _parse_frontmatter(file_path: Path) -> dict[str, str]:
+    """从 markdown 文件 YAML frontmatter 中提取简单 key/value 字段。"""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
     except Exception:
-        return None
+        return {}
     if not lines or lines[0].strip() != "---":
-        return None
+        return {}
+    frontmatter: dict[str, str] = {}
     for i in range(1, min(len(lines), 30)):
         line = lines[i].strip()
         if line == "---":
             break
-        m = re.match(r"^keyword:\s*(.+)", line)
+        m = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", line)
         if m:
-            return m.group(1).strip()
-    return None
+            value = m.group(2).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            frontmatter[m.group(1).strip()] = value
+    return frontmatter
+
+def _parse_frontmatter_keyword(file_path: Path) -> str | None:
+    """从 markdown 文件 YAML frontmatter 中提取 keyword 字段。"""
+    return _parse_frontmatter(file_path).get("keyword") or None
 
 def _contains_keyword(file_name: str, keyword: str) -> bool:
     normalized_name = file_name.lower()
@@ -397,6 +405,14 @@ def _target_for_joblens_output(file_path: Path, keyword: str, task: dict[str, st
         if direct_detail_match:
             return job_dir / f"{direct_detail_match.group(1)}.md"
         return job_dir / name
+
+    if name.startswith(f"{pfx}_COMPANY_"):
+        if is_raw or "MANIFEST" in name:
+            return job_dir / "company" / "raw" / name
+        direct_company_match = re.match(rf"{pfx}_COMPANY_(.+)_\d{{8}}_\d{{6}}\.md$", name)
+        if direct_company_match:
+            return job_dir / "company" / f"{direct_company_match.group(1)}.md"
+        return job_dir / "company" / name
 
     if name.startswith(f"{pfx}_RAW_"):
         return job_dir / "raw" / name
@@ -737,16 +753,18 @@ def archive_joblens_outputs(
         if file_path.suffix.lower() != ".md":
             skipped.append({"file": str(file_path), "reason": "not a markdown file"})
             continue
-        if file_path.name.startswith((f"{pfx}_DETAIL_RAW_", f"{pfx}_DETAIL_MANIFEST_", f"{pfx}_RAW_")):
+        if file_path.name.startswith((f"{pfx}_DETAIL_RAW_", f"{pfx}_DETAIL_MANIFEST_", f"{pfx}_COMPANY_MANIFEST_", f"{pfx}_RAW_")):
             skipped.append({"file": str(file_path), "reason": "raw or manifest file"})
             continue
 
-        # For detail files, try to read keyword from YAML frontmatter
+        # For detail and company files, try to read keyword/status from YAML frontmatter.
         is_detail = file_path.name.startswith(f"{pfx}_DETAIL_") and not file_path.name.startswith((f"{pfx}_DETAIL_RAW_", f"{pfx}_DETAIL_MANIFEST_"))
-        frontmatter_keyword = _parse_frontmatter_keyword(file_path) if (is_detail and file_path.suffix.lower() == ".md") else None
+        is_company = file_path.name.startswith(f"{pfx}_COMPANY_") and not file_path.name.startswith(f"{pfx}_COMPANY_MANIFEST_")
+        frontmatter = _parse_frontmatter(file_path) if ((is_detail or is_company) and file_path.suffix.lower() == ".md") else {}
+        frontmatter_keyword = frontmatter.get("keyword") or None
 
         if (
-            not file_path.name.startswith((f"{pfx}_KEYWORDS_", f"{pfx}_DETAIL_RAW_", f"{pfx}_DETAIL_MANIFEST_"))
+            not file_path.name.startswith((f"{pfx}_KEYWORDS_", f"{pfx}_DETAIL_RAW_", f"{pfx}_DETAIL_MANIFEST_", f"{pfx}_COMPANY_"))
             and not file_path.name.startswith(f"{pfx.lower()}_keyword_discovery_")
             and not file_path.name.startswith("zhilian_keyword_discovery_")
             and not re.match(rf"{pfx}_DETAIL_.+_\d{{8}}_\d{{6}}\.md$", file_path.name)
@@ -763,11 +781,16 @@ def archive_joblens_outputs(
             continue
         is_index = target.stem.startswith("_岗位索引表") or target.stem.startswith("_关键词发现结果")
         final_target = _unique_target_path(target, overwrite=is_index)
-        planned.append({
+        planned_item = {
             "source": str(file_path),
             "target": str(final_target),
             "modified": modified.isoformat(timespec="seconds"),
-        })
+        }
+        if is_detail and frontmatter.get("recruitment_status"):
+            planned_item["recruitment_status"] = frontmatter.get("recruitment_status")
+            planned_item["recruitment_status_label"] = frontmatter.get("recruitment_status_label", "")
+            planned_item["status_checked_at"] = frontmatter.get("status_checked_at", "")
+        planned.append(planned_item)
 
     moved: list[dict[str, str]] = []
     if not dry_run:
