@@ -15,6 +15,8 @@ Agent / MCP Tool
   -> archive_outputs.py 归档到 storage_layer/positions
 ```
 
+BOSS 直聘使用同一队列式流程，队列文件为 `boss_detail_tasks.jsonl` / `boss_detail_results.jsonl`，由 `watch_boss_downloads.sh` 监视，归档时详情与公司信息合并为单一 Markdown。
+
 ## 前置条件
 
 - [ ] Chrome 已安装并启用 Joblens 扩展。
@@ -23,6 +25,7 @@ Agent / MCP Tool
 - [ ] 已从岗位索引表或候选岗位文件中提取详情页 URL 清单。
 - [ ] `scraping_layer/scripts/watch_downloads.sh` 可以正常运行。
 - [ ] `scraping_layer/scripts/archive_outputs.py` 可以正常归档。
+- [ ] Downloads 目录使用默认 `/mnt/d/Downloads`，或已通过 `JOBSNIPER_DOWNLOADS_PATH` 指定自定义路径（MCP Server 会将路径传给监视脚本）。
 
 ## 自适应降级阶梯
 
@@ -121,6 +124,8 @@ storage_layer/positions/zhilian_intelligence_vault/产品/互联网产品经理/
 ```text
 [公司名称]_[岗位名称].md
 ```
+
+BOSS 公司信息产物归档至职业目录下的 `company/` 子目录；原始 HTML / manifest 归档至 `raw/`（公司产物再下沉至 `company/raw/`）。
 
 如果需要手动触发归档，可通过 MCP tool 执行：
 

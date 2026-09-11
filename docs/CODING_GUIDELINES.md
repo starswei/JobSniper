@@ -19,6 +19,9 @@
 3. `_职业索引表_[职能名称].md`，如`_职业索引表_教务管理.md`
 4. `_岗位索引表_[职业名称].md`，如`_岗位索引表_课程设计.md`
 5. `[公司名称]_[岗位名称].md`，此处的岗位名称为具体的招聘信息中的岗位名称，如`昂立教育_教研经理.md`
+6. `{平台}_keyword_discovery_{timestamp}.md`，平台关键词发现产物，直接存放于 `positions/` 根目录（属于发现产物，不是平台索引表）
+7. `raw/` 子目录：归档时保留的原始 HTML 与 manifest JSON 放入所属职业目录下的 `raw/`
+8. `company/` 子目录：BOSS 公司信息产物归档至所属职业目录下的 `company/`，其原始文件进一步下沉至 `company/raw/`
 
 
 # 元数据规范 (Metadata)
@@ -47,8 +50,29 @@ platform: 智联招聘
 ---
 ```
 
+BOSS 直聘产物（含详情与公司信息合并后的 Markdown）使用平台扩展字段：
 
-| 示例：
+```yaml
+---
+source: boss
+keyword: [职业关键词]
+company: [公司名称]
+companyUrl: [公司页 URL]
+title: [岗位名称]
+url: [岗位详情 URL]
+collected: [采集时间 ISO8601]
+recruitment_status: [招聘状态标识]
+recruitment_status_label: [招聘状态文本]
+status_checked_at: [状态检查时间]
+status_source: [状态来源]
+status_evidence: ""
+---
+```
+
+字段解析器按简单 `key: value` 规则读取 frontmatter，未列出的平台扩展字段原样保留。
+
+
+示例：
 storage_layer/  
 ├── personas/  
 │   └── 用户画像.md  
