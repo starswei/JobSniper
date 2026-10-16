@@ -14,6 +14,9 @@ import queue
 import threading
 import hashlib
 import glob
+import tempfile
+import uuid
+from io import TextIOWrapper
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -24,7 +27,11 @@ mcp = FastMCP("JobSniper")
 
 # 基础路径配置
 BASE_DIR = Path(__file__).resolve().parent
-STORAGE_PATH = BASE_DIR / "storage_layer"
+# 存储根目录（D1）：环境变量 JOBSNIPER_STORAGE_ROOT > 默认 <repo>/storage_layer。
+# 未设置该变量时行为与改造前完全一致；设置后所有 vault/persona/索引表均落在该目录下，
+# 使冒烟测试与 CI 能使用临时目录夹具，不触碰真实 storage_layer。
+_STORAGE_ROOT_ENV = os.environ.get("JOBSNIPER_STORAGE_ROOT", "").strip()
+STORAGE_PATH = Path(_STORAGE_ROOT_ENV) if _STORAGE_ROOT_ENV else BASE_DIR / "storage_layer"
 PERSONA_PATH = STORAGE_PATH / "personas" / "current_user.json"
 POSITIONS_PATH = STORAGE_PATH / "positions"
 VAULT_PATH = POSITIONS_PATH / "zhilian_intelligence_vault"
@@ -38,11 +45,15 @@ JOBLENS_DIST_PATH = JOBLENS_PATH / "dist"
 def _detect_downloads_path() -> Path:
     """解析 Downloads 目录。
 
-    优先级：环境变量 JOBSNIPER_DOWNLOADS_PATH > 自动探测常见路径 > 默认 /mnt/d/Downloads。
+    环境变量 JOBSNIPER_DOWNLOADS_PATH 优先；Windows 默认固定 D:\\Downloads，
+    不存在时返回该路径并由调用方明确报错，不静默改用用户的其他下载目录。
+    非 Windows 保留原有 WSL 自动探测。
     """
     env_value = os.environ.get("JOBSNIPER_DOWNLOADS_PATH", "").strip()
     if env_value:
         return Path(env_value)
+    if os.name == "nt":
+        return Path(r"D:\Downloads")
     candidates = [
         Path("/mnt/d/Downloads"),
         Path.home() / "Downloads",
@@ -63,6 +74,19 @@ def _detect_windows_chrome() -> str:
     env_value = os.environ.get("JOBSNIPER_CHROME_PATH", "").strip()
     if env_value:
         return env_value
+    if os.name == "nt":
+        program_files = Path(os.environ.get("ProgramFiles") or r"C:\Program Files")
+        program_files_x86 = Path(os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)")
+        candidates = [
+            str(program_files / "Google/Chrome/Application/chrome.exe"),
+            str(program_files_x86 / "Google/Chrome/Application/chrome.exe"),
+            str(program_files / "Microsoft/Edge/Application/msedge.exe"),
+            str(program_files_x86 / "Microsoft/Edge/Application/msedge.exe"),
+        ]
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        if local_app_data:
+            candidates.append(str(Path(local_app_data) / "Google/Chrome/Application/chrome.exe"))
+        return next((candidate for candidate in candidates if Path(candidate).is_file()), candidates[0])
     candidates = [
         "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
         "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
@@ -86,15 +110,20 @@ def _script_env() -> dict[str, str]:
     将解析后的 Downloads 路径显式传给子脚本，保证 MCP Server、监视脚本、
     归档脚本与 Joblens 队列路径一致（即使未设置环境变量、由自动探测决定路径）。
     """
-    return {**os.environ, "JOBSNIPER_DOWNLOADS_PATH": DOWNLOADS_PATH}
+    return {**os.environ, "JOBSNIPER_DOWNLOADS_PATH": DOWNLOADS_PATH,
+            "JOBSNIPER_STORAGE_ROOT": str(STORAGE_PATH), "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8"}
 MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_downloads.sh"
 LIST_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_job_list.sh"
 BOSS_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_boss_downloads.sh"
 BOSS_LIST_MONITOR_SCRIPT = SCRAPING_PATH / "scripts" / "watch_boss_job_list.sh"
-DETAIL_WAKE_LOCK = Path("/tmp/jobsniper_detail_queue_wake")
+RUNTIME_PATH = Path(tempfile.gettempdir()) / "jobsniper"
+DETAIL_WAKE_LOCK = RUNTIME_PATH / "detail_queue_wake"
 DETAIL_WAKE_DEBOUNCE_SECONDS = 10
-LIST_WAKE_LOCK = Path("/tmp/jobsniper_list_queue_wake")
+LIST_WAKE_LOCK = RUNTIME_PATH / "list_queue_wake"
 LIST_WAKE_DEBOUNCE_SECONDS = 10
+_NATIVE_MONITOR_START_GUARD = threading.Lock()
+_NATIVE_MONITOR_START_LOCKS: dict[str, threading.Lock] = {}
 
 # ----------------------------------------------------------------
 # 通用 helper
@@ -118,52 +147,151 @@ def _safe_keyword_dir(keyword: str) -> str:
 # 监控/唤醒 helper
 # ----------------------------------------------------------------
 
-def _start_monitor_if_needed() -> None:
-    """启动下载目录监控脚本，如果未在运行"""
-    if not MONITOR_SCRIPT.exists():
-        return
-    lock_file = Path("/tmp/watch_downloads/lock")
-    # 检查是否已在运行
+def _start_legacy_monitor(script: Path, lock_name: str) -> dict[str, Any]:
+    """仅非 Windows 复用旧 bash 监控；Windows 绝不调用 bash 或 os.kill。"""
+    if os.name == "nt":
+        return {
+            "started": False,
+            "reason": "Legacy bash monitor is disabled on native Windows; use the Python monitor.",
+        }
+    if not script.is_file():
+        return {"started": False, "reason": f"Monitor script not found: {script}"}
+    # 旧脚本仍在 /tmp/watch_*/lock 写 PID，不能改成新的 Windows 锁协议。
+    lock_file = Path(tempfile.gettempdir()) / lock_name / "lock"
     if lock_file.exists():
         try:
-            old_pid = int(lock_file.read_text().strip())
-            os.kill(old_pid, 0)  # 信号0仅检测进程是否存在
-            return  # 已在运行
+            old_pid = int(lock_file.read_text(encoding="utf-8").strip())
+            if old_pid > 0:
+                os.kill(old_pid, 0)  # 仅 POSIX 分支；Windows signal 0 不安全。
+                return {"started": False, "reason": "Legacy monitor is already running."}
         except (ValueError, OSError):
-            pass  # 锁文件过期，继续启动
+            pass
     try:
-        subprocess.Popen(
-            ["bash", str(MONITOR_SCRIPT)],
+        process = subprocess.Popen(
+            ["bash", str(script)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
             env=_script_env(),
         )
-    except Exception:
-        pass
+        return {"started": True, "pid": process.pid}
+    except Exception as exc:
+        return {"started": False, "reason": f"Failed to launch monitor: {exc}"}
 
 
-def _start_list_monitor_if_needed() -> None:
-    """启动岗位列表队列监控脚本（如果未在运行）。"""
-    if not LIST_MONITOR_SCRIPT.exists():
-        return
-    lock_file = Path("/tmp/watch_job_list/lock")
-    if lock_file.exists():
-        try:
-            old_pid = int(lock_file.read_text().strip())
-            os.kill(old_pid, 0)
-            return
-        except (ValueError, OSError):
-            pass
+def _start_native_monitor(platform: str, queue_type: str) -> dict[str, Any]:
+    """Spawn with this interpreter; serialize local starts and rely on the OS lock across processes."""
     try:
-        subprocess.Popen(
-            ["bash", str(LIST_MONITOR_SCRIPT)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            env=_script_env(),
+        from scraping_layer.scripts.jobsniper_monitor import state_directory
+        directory = state_directory(platform, queue_type, DOWNLOADS_PATH, STORAGE_PATH)
+        with _NATIVE_MONITOR_START_GUARD:
+            start_lock = _NATIVE_MONITOR_START_LOCKS.setdefault(str(directory), threading.Lock())
+        with start_lock:
+            return _spawn_native_monitor_locked(platform, queue_type, directory)
+    except Exception as exc:
+        return {"started": False, "reason": f"Failed to launch native monitor: {exc}"}
+
+
+def _spawn_native_monitor_locked(platform: str, queue_type: str, directory: Path) -> dict[str, Any]:
+    from scraping_layer.scripts.jobsniper_monitor import FileLock
+    probe = FileLock(directory / "monitor.lock")
+    if not probe.acquire():
+        return {"started": False, "running": True, "state_dir": str(directory),
+                "reason": "Native monitor already holds the queue lock."}
+    probe.release()
+    token = uuid.uuid4().hex
+    script = SCRAPING_PATH / "scripts" / "jobsniper_monitor.py"
+    with (directory / "worker.log").open("a", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            [sys.executable, str(script), "--platform", platform, "--queue", queue_type,
+             "--downloads", DOWNLOADS_PATH, "--storage-root", str(STORAGE_PATH),
+             "--startup-token", token],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=_script_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except Exception:
-        pass
+    # Keep a waiter alive until the child exits; do not leak process handles or
+    # trigger Popen's "subprocess is still running" warning after returning.
+    threading.Thread(target=process.wait, daemon=True, name="jobsniper-monitor-reaper").start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            heartbeat = json.loads((directory / "heartbeat.json").read_text(encoding="utf-8"))
+            if heartbeat.get("token") == token:
+                return {"started": True, "running": process.poll() is None,
+                        "pid": process.pid, "state_dir": str(directory)}
+        except (OSError, ValueError):
+            pass
+        code = process.poll()
+        if code is not None:
+            if code == 4:
+                # Another MCP process won the small cross-process spawn race.
+                existing = FileLock(directory / "monitor.lock")
+                if not existing.acquire():
+                    return {"started": False, "running": True, "state_dir": str(directory),
+                            "reason": "Another native monitor acquired the queue lock."}
+                existing.release()
+            return {"started": False, "state_dir": str(directory),
+                    "reason": f"Monitor exited before startup acknowledgement (exit {code}); see worker.log."}
+        time.sleep(0.05)
+    return {"started": True, "ready": False, "pid": process.pid, "state_dir": str(directory),
+            "reason": "Worker spawned but startup acknowledgement timed out; inspect worker.log."}
+
+
+def _start_monitor_if_needed(platform: str = "zhilian") -> dict[str, Any]:
+    if os.name == "nt":
+        return _start_native_monitor(platform, "detail")
+    script = BOSS_MONITOR_SCRIPT if platform == "boss" else MONITOR_SCRIPT
+    return _start_legacy_monitor(script, "watch_boss_downloads" if platform == "boss" else "watch_downloads")
+
+
+def _start_list_monitor_if_needed(platform: str = "zhilian") -> dict[str, Any]:
+    if os.name == "nt":
+        return _start_native_monitor(platform, "list")
+    script = BOSS_LIST_MONITOR_SCRIPT if platform == "boss" else LIST_MONITOR_SCRIPT
+    return _start_legacy_monitor(script, "watch_boss_job_list" if platform == "boss" else "watch_job_list")
+
+
+def _append_queue_task(path: Path, task: dict[str, Any]) -> None:
+    from scraping_layer.scripts.jobsniper_monitor import append_queue_tasks
+    append_queue_tasks(path, [task])
+
+
+def _recover_native_monitors() -> None:
+    """Resume eligible native Windows queues asynchronously during MCP startup."""
+    if os.name != "nt":
+        return
+
+    def scan_queues() -> None:
+        try:
+            from scraping_layer.scripts.jobsniper_monitor import startup_recovery_decision
+            if not Path(DOWNLOADS_PATH).is_dir():
+                return  # Do not create a missing Downloads directory at startup.
+            for platform in ("zhilian", "boss"):
+                for queue_type in ("list", "detail"):
+                    try:
+                        should_start, reason = startup_recovery_decision(
+                            platform, queue_type, DOWNLOADS_PATH, STORAGE_PATH
+                        )
+                        if should_start:
+                            result = _start_native_monitor(platform, queue_type)
+                            if not result.get("started") and not result.get("running"):
+                                print(
+                                    f"[JobSniper] startup recovery could not start {platform}/{queue_type}: "
+                                    f"{result.get('reason', 'unknown error')}",
+                                    file=sys.stderr,
+                                )
+                        elif reason not in ("downloads directory unavailable", "queue file absent", "queue empty"):
+                            print(f"[JobSniper] startup recovery skipped {platform}/{queue_type}: {reason}", file=sys.stderr)
+                    except Exception as exc:
+                        # One corrupt queue must not block recovery of the other three.
+                        print(f"[JobSniper] startup recovery skipped {platform}/{queue_type}: {type(exc).__name__}", file=sys.stderr)
+        except Exception as exc:
+            # A recovery scan must never prevent the MCP stdio server from starting.
+            print(f"[JobSniper] startup recovery scan failed: {type(exc).__name__}", file=sys.stderr)
+
+    try:
+        threading.Thread(target=scan_queues, daemon=True, name="jobsniper-startup-recovery").start()
+    except Exception as exc:
+        print(f"[JobSniper] could not schedule startup recovery: {type(exc).__name__}", file=sys.stderr)
 
 
 def _launch_detail_queue_wake(wake_url: str) -> tuple[bool, str | None, bool]:
@@ -174,15 +302,19 @@ def _launch_detail_queue_wake(wake_url: str) -> tuple[bool, str | None, bool]:
     except Exception:
         last_wake = 0.0
 
-    if now - last_wake < DETAIL_WAKE_DEBOUNCE_SECONDS:
+    if 0 <= now - last_wake < DETAIL_WAKE_DEBOUNCE_SECONDS:
         return False, None, True
 
     try:
-        DETAIL_WAKE_LOCK.write_text(str(now), encoding="utf-8")
+        DETAIL_WAKE_LOCK.parent.mkdir(parents=True, exist_ok=True)
         subprocess.Popen([WINDOWS_CHROME_PATH, wake_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True, None, False
     except Exception as exc:
         return False, str(exc), False
+    try:
+        DETAIL_WAKE_LOCK.write_text(str(now), encoding="utf-8")
+    except OSError as exc:
+        return True, f"Browser started but wake timestamp could not be saved: {exc}", False
+    return True, None, False
 
 
 def _launch_list_queue_wake(wake_url: str) -> tuple[bool, str | None, bool]:
@@ -193,15 +325,19 @@ def _launch_list_queue_wake(wake_url: str) -> tuple[bool, str | None, bool]:
     except Exception:
         last_wake = 0.0
 
-    if now - last_wake < LIST_WAKE_DEBOUNCE_SECONDS:
+    if 0 <= now - last_wake < LIST_WAKE_DEBOUNCE_SECONDS:
         return False, None, True
 
     try:
-        LIST_WAKE_LOCK.write_text(str(now), encoding="utf-8")
+        LIST_WAKE_LOCK.parent.mkdir(parents=True, exist_ok=True)
         subprocess.Popen([WINDOWS_CHROME_PATH, wake_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True, None, False
     except Exception as exc:
         return False, str(exc), False
+    try:
+        LIST_WAKE_LOCK.write_text(str(now), encoding="utf-8")
+    except OSError as exc:
+        return True, f"Browser started but wake timestamp could not be saved: {exc}", False
+    return True, None, False
 
 
 # ----------------------------------------------------------------
@@ -636,15 +772,14 @@ def launch_job_list_collection(
     if not keyword.strip():
         return _json_response({"ok": False, "error": "keyword must not be empty"})
 
-    _start_list_monitor_if_needed()
     collection_url = _build_list_url(platform, keyword, city_id, pages, test, debug)
 
     task_file = _platform_task_file(platform, "list_tasks")
     task_id = hashlib.sha1(collection_url.encode("utf-8")).hexdigest()[:16]
-    task_line = json.dumps({"task_id": task_id, "url": collection_url, "keyword": keyword.strip()}) + "\n"
+    task = {"task_id": task_id, "url": collection_url, "keyword": keyword.strip()}
     try:
-        with open(task_file, "a", encoding="utf-8") as f:
-            f.write(task_line)
+        _append_queue_task(task_file, task)
+        monitor = _start_list_monitor_if_needed(platform)
         wake_url = None
         chrome_launched = False
         chrome_error = None
@@ -656,6 +791,7 @@ def launch_job_list_collection(
             "ok": True,
             "platform": platform,
             "task_id": task_id,
+            "monitor": monitor,
             "url": collection_url,
             "task_file": str(task_file),
             "wake_url": wake_url,
@@ -721,18 +857,16 @@ def launch_job_detail_collection(
     if not is_valid:
         return _json_response({"ok": False, "error": error_msg})
 
-    _start_monitor_if_needed()
-
     detail_url = _build_detail_url(platform, job_url, keyword, debug, save_html, save_json)
     wake_url = None
     if wake_browser:
         wake_url = _build_platform_wake_url(platform, "detail", debug)
 
     task_file = _platform_task_file(platform, "detail_tasks")
-    task_line = json.dumps({"url": detail_url, "keyword": keyword.strip() or "job_detail"}) + "\n"
+    task = {"url": detail_url, "keyword": keyword.strip() or "job_detail"}
     try:
-        with open(task_file, "a", encoding="utf-8") as f:
-            f.write(task_line)
+        _append_queue_task(task_file, task)
+        monitor = _start_monitor_if_needed(platform)
         chrome_launched = False
         chrome_error = None
         wake_debounced = False
@@ -742,6 +876,7 @@ def launch_job_detail_collection(
             "ok": True,
             "platform": platform,
             "url": detail_url,
+            "monitor": monitor,
             "task_file": str(task_file),
             "wake_url": wake_url,
             "chrome_launched": chrome_launched,
@@ -784,6 +919,7 @@ def archive_joblens_outputs(
     pfx = _platform_task_prefix(platform)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
 
     if not downloads.exists():
         return _json_response({"ok": False, "error": f"downloads path not found: {DOWNLOADS_PATH}"})
@@ -795,9 +931,13 @@ def archive_joblens_outputs(
         for path in downloads.glob(pattern)
     }
     for file_path in sorted(candidates):
-        if not file_path.is_file():
+        try:
+            if not file_path.is_file():
+                continue
+            modified = datetime.fromtimestamp(file_path.stat().st_mtime)
+        except OSError as exc:
+            failed.append({"source": str(file_path), "error": str(exc), "stage": "stat"})
             continue
-        modified = datetime.fromtimestamp(file_path.stat().st_mtime)
         if modified < cutoff:
             skipped.append({"file": str(file_path), "reason": "outside since_minutes window"})
             continue
@@ -834,7 +974,11 @@ def archive_joblens_outputs(
             skipped.append({"file": str(file_path), "reason": "unrecognized Joblens output pattern"})
             continue
         is_index = target.stem.startswith("_岗位索引表") or target.stem.startswith("_关键词发现结果")
-        final_target = _unique_target_path(target, overwrite=is_index)
+        try:
+            final_target = _unique_target_path(target, overwrite=is_index)
+        except OSError as exc:
+            failed.append({"source": str(file_path), "target": str(target), "error": str(exc), "stage": "plan"})
+            continue
         planned_item = {
             "source": str(file_path),
             "target": str(final_target),
@@ -847,16 +991,26 @@ def archive_joblens_outputs(
         planned.append(planned_item)
 
     moved: list[dict[str, str]] = []
+    backups: list[dict[str, str]] = []
     if not dry_run:
         for item in planned:
             source = Path(item["source"])
             target = Path(item["target"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(source), str(target))
-            moved.append({"source": str(source), "target": str(target)})
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                is_index = target.stem.startswith(("_岗位索引表", "_关键词发现结果"))
+                if is_index and target.exists():
+                    # 备份失败时不覆盖旧索引；多次覆盖也保留所有历史 .bak。
+                    backup = _unique_target_path(Path(str(target) + ".bak"))
+                    shutil.copy2(target, backup)
+                    backups.append({"target": str(target), "backup": str(backup)})
+                shutil.move(str(source), str(target))
+                moved.append({"source": str(source), "target": str(target)})
+            except Exception as exc:
+                failed.append({"source": str(source), "target": str(target), "error": str(exc)})
 
     return _json_response({
-        "ok": True,
+        "ok": not failed,
         "dry_run": dry_run,
         "platform": platform,
         "keyword": keyword,
@@ -867,6 +1021,9 @@ def archive_joblens_outputs(
         "moved_count": len(moved),
         "planned": planned,
         "moved": moved,
+        "failed_count": len(failed),
+        "failed": failed,
+        "backups": backups,
         "skipped_count": len(skipped),
         "skipped": skipped,
     })
@@ -900,6 +1057,12 @@ def update_persona(skill_name: str, confidence_score: int, reasoning: str) -> st
     return f"[Spotter] 画像已更新：{skill_name} 置信度 -> {confidence_score}。原因：{reasoning}"
 
 async def _run_stdio_transport() -> None:
+    # Windows MCP 启动时后台检查既有未完成队列，不阻塞协议握手。
+    _recover_native_monitors()
+    # 与 MCP 官方传输层一致，重包装二进制管道，不依赖系统代码页或环境变量。
+    # 不使用 with，避免显式关闭进程的标准句柄。
+    stdin = TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+    stdout = TextIOWrapper(sys.stdout.buffer, encoding="utf-8", newline="\n")
     read_stream_writer, read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](0)
     write_stream, write_stream_reader = anyio.create_memory_object_stream[SessionMessage](0)
     stdin_queue: queue.Queue[SessionMessage | Exception | None] = queue.Queue()
@@ -907,7 +1070,7 @@ async def _run_stdio_transport() -> None:
     def stdin_reader() -> None:
         try:
             while True:
-                line = sys.stdin.readline()
+                line = stdin.readline()
                 if line == "":
                     stdin_queue.put(None)
                     return
@@ -937,8 +1100,8 @@ async def _run_stdio_transport() -> None:
         async with write_stream_reader:
             async for session_message in write_stream_reader:
                 payload = session_message.message.model_dump_json(by_alias=True, exclude_none=True)
-                sys.stdout.write(payload + "\n")
-                sys.stdout.flush()
+                stdout.write(payload + "\n")
+                stdout.flush()
 
     reader = threading.Thread(target=stdin_reader, daemon=True)
     reader.start()
