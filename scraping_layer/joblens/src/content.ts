@@ -3273,7 +3273,300 @@ declare global {
         overlay.innerText = `✅ 推荐页采集完成\n${session.jobs.length} 个岗位 / ${session.pages.length} 页`;
     }
 
-    if (isBossRecommendCollectMode()) {
+    // --- BOSS 直聘面试历史采集 ---
+    type InterviewRecord = {
+        index: number;
+        date: string;
+        time: string;
+        title: string;
+        salary: string;
+        company: string;
+        companyTags: string;
+        interviewTime: string;
+        location: string;
+        status: string;
+        recruiter: string;
+        recruiterName: string;
+        recruiterTitle: string;
+        raw: string;
+    };
+
+    function splitRecruiter(raw: string): { name: string; title: string } {
+        const honorific = raw.match(/^(.{1,4}?(?:女士|先生|小姐|同学))(.+)$/);
+        if (honorific) return { name: honorific[1].trim(), title: honorific[2].trim() };
+        const titleMatch = raw.match(/^(.*?)(HRBP|HR|招聘|人事|人才|经理|主管|专员|主任|总监|顾问|经纪人)/);
+        if (titleMatch && titleMatch[1].trim()) {
+            return { name: titleMatch[1].trim(), title: raw.slice(titleMatch[1].length).trim() };
+        }
+        return { name: raw.trim(), title: "" };
+    }
+
+    const INTERVIEW_SESSION_KEY = "joblens_interview_session_v1";
+
+    function isBossInterviewMode(): boolean {
+        if (!isBossRecommendCollectMode()) return false;
+        return new URLSearchParams(window.location.search).get("tab") === "3";
+    }
+
+    function interviewDomProbe(): Array<Record<string, unknown>> {
+        const rows: Array<Record<string, unknown>> = [];
+        document.querySelectorAll<HTMLElement>("div,li,section").forEach(el => {
+            const text = (el.innerText || "").trim();
+            if (!text.includes("面试")) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 80 || rect.height < 16) return;
+            rows.push({
+                tag: el.tagName,
+                cls: String(el.className || "").slice(0, 140),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                length: text.length,
+                hasDate: /\d{4}\.\d{2}\.\d{2}/.test(text),
+                hasLocation: text.includes("面试地点"),
+                text: text.slice(0, 120)
+            });
+        });
+        return rows.slice(0, 250);
+    }
+
+    function findInterviewCards(): HTMLElement[] {
+        const datePattern = /\d{4}\.\d{2}\.\d{2}\s+\d{1,2}:\d{2}\s*面试/;
+        const candidates = Array.from(document.querySelectorAll<HTMLElement>("div,li,section")).filter(el => {
+            const text = (el.innerText || "").trim();
+            if (!datePattern.test(text)) return false;
+            if (!text.includes("面试时间") && !text.includes("面试地点")) return false;
+            return text.length < 4000;
+        });
+        const deepest = candidates.filter(el => !candidates.some(other => other !== el && el.contains(other)));
+        const seen = new Set<string>();
+        return deepest.filter(el => {
+            const key = (el.innerText || "").trim();
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function parseInterviewCard(card: HTMLElement, index: number): InterviewRecord | null {
+        const text = (card.innerText || "").replace(/\r/g, "").trim();
+        const head = text.match(/(\d{4}\.\d{2}\.\d{2})\s+(\d{1,2}:\d{2})\s*面试\s+([\s\S]*)/);
+        if (!head) return null;
+        const date = head[1];
+        const time = head[2];
+        const rest = head[3];
+        const salaryMatch = rest.match(/^(.*?)\s+(\d+(?:-\d+)?K(?:·\d+薪)?|\d+-\d+元\/天|面议)/);
+        const title = (salaryMatch ? salaryMatch[1] : rest.split("\n")[0]).trim();
+        const salary = salaryMatch ? salaryMatch[2] : "";
+        const companyMatch = text.match(/([^\n\[]+?)\s*\[([^\]]+)\]/);
+        const interviewTime = (text.match(/面试时间：\s*([^\n]+)/) || [])[1] || "";
+        const location = (text.match(/面试地点：\s*([^\n]+)/) || [])[1] || "";
+        const status = (text.match(/(职位已关闭|面试已取消|面试通过|已入职|待面试|面试中)/) || [])[1] || "";
+        const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
+        const recruiter = lines.length > 0 && !/^\d{4}\.\d{2}\.\d{2}/.test(lines[0]) ? lines[0] : "";
+        return {
+            index,
+            date,
+            time,
+            title,
+            salary,
+            company: companyMatch ? companyMatch[1].trim() : "",
+            companyTags: companyMatch ? companyMatch[2].trim() : "",
+            interviewTime,
+            location,
+            status,
+            recruiter,
+            recruiterName: splitRecruiter(recruiter).name,
+            recruiterTitle: splitRecruiter(recruiter).title,
+            raw: text.slice(0, 500)
+        };
+    }
+
+    function loadInterviewSession(): { records: InterviewRecord[]; pages: number[] } {
+        try {
+            const raw = sessionStorage.getItem(INTERVIEW_SESSION_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed.records) && Array.isArray(parsed.pages)) return parsed;
+            }
+        } catch {}
+        return { records: [], pages: [] };
+    }
+
+    function saveInterviewSession(session: { records: InterviewRecord[]; pages: number[] }): void {
+        try {
+            sessionStorage.setItem(INTERVIEW_SESSION_KEY, JSON.stringify(session));
+        } catch {}
+    }
+
+    async function waitForInterviewCards(timeoutMs: number): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (findInterviewCards().length > 0) return true;
+            await bossChatWait(500);
+        }
+        return false;
+    }
+
+    function buildInterviewMarkdown(records: InterviewRecord[], pages: number[]): string {
+        let content = `# BOSS直聘面试历史\n\n`;
+        content += `- 采集时间：${new Date().toLocaleString()}\n`;
+        content += `- 记录数：${records.length}\n`;
+        content += `- 已采集页：${pages.join(", ")}\n\n`;
+        records.forEach(record => {
+            content += `## ${record.index}. ${record.date} ${record.time} · ${record.title}\n\n`;
+            content += `- 公司：${record.company || "未知"}\n`;
+            if (record.companyTags) content += `- 行业/融资/规模：${record.companyTags}\n`;
+            content += `- 薪资：${record.salary || "未知"}\n`;
+            content += `- 面试时间：${record.interviewTime || `${record.date} ${record.time}`}\n`;
+            content += `- 面试地点：${record.location || "未知"}\n`;
+            content += `- 状态：${record.status || "未标注"}\n`;
+            if (record.recruiterName) {
+                content += `- 招聘者：${record.recruiterName}${record.recruiterTitle ? `（${record.recruiterTitle}）` : ""}\n`;
+            } else if (record.recruiter) {
+                content += `- 招聘者：${record.recruiter}\n`;
+            }
+            content += `\n`;
+        });
+        return content;
+    }
+
+    function parseInterviewRecordsFromText(text: string): InterviewRecord[] {
+        const pattern = /(\d{4}\.\d{2}\.\d{2})\s+(\d{1,2}:\d{2})\s*面试(?!时间|地点)/g;
+        const matches = Array.from(text.matchAll(pattern));
+        const records: InterviewRecord[] = [];
+        matches.forEach((match, index) => {
+            const date = match[1];
+            const time = match[2];
+            const start = match.index || 0;
+            let end = text.length;
+            if (index + 1 < matches.length) {
+                const nextStart = matches[index + 1].index || text.length;
+                let prevEnd = text.lastIndexOf("\n", nextStart - 1);
+                let prevStart = text.lastIndexOf("\n", prevEnd - 1) + 1;
+                while (prevStart > 0 && !text.slice(prevStart, prevEnd).trim()) {
+                    prevEnd = prevStart - 1;
+                    prevStart = text.lastIndexOf("\n", prevEnd - 1) + 1;
+                }
+                const beforeRecruiterEnd = prevStart - 1;
+                const beforeRecruiterStart = text.lastIndexOf("\n", beforeRecruiterEnd - 1) + 1;
+                const beforeRecruiterLine = text.slice(beforeRecruiterStart, beforeRecruiterEnd).trim();
+                end = /^(职位已关闭|面试已取消|面试通过|已入职|待面试|面试中)$/.test(beforeRecruiterLine)
+                    ? Math.max(start + 1, beforeRecruiterStart)
+                    : Math.max(start + 1, prevStart);
+            }
+            const block = text.slice(start, end).trim();
+            const preDateText = text.slice(Math.max(0, start - 300), start);
+            const preDateStatus = (preDateText.match(/(职位已关闭|面试已取消|面试通过|已入职|待面试|面试中)/g) || []).pop() || "";
+            const rest = block.slice(block.indexOf(match[0]) + match[0].length).trim();
+            const lines = rest.split("\n").map(line => line.trim()).filter(Boolean);
+            const title = lines[0] || "";
+            const salaryLine = lines.find(line => /^(\d+(?:-\d+)?K(?:·\d+薪)?|\d+-\d+元\/天|面议)/.test(line)) || "";
+            const tagsIndex = lines.findIndex(line => /^\[.+\]$/.test(line));
+            const company = tagsIndex > 0 ? lines[tagsIndex - 1] : "";
+            const companyTags = tagsIndex >= 0 ? lines[tagsIndex].replace(/^\[|\]$/g, "") : "";
+            const interviewTime = (block.match(/面试时间：\s*([^\n]+)/) || [])[1] || "";
+            const location = (block.match(/面试地点：\s*([^\n]+)/) || [])[1] || "";
+            const blockStatus = (block.match(/(职位已关闭|面试已取消|面试通过|已入职|待面试|面试中)/) || [])[1] || "";
+            const status = blockStatus || preDateStatus;
+            const beforeChunk = text.slice(Math.max(0, start - 200), start).split("\n").map(line => line.trim()).filter(Boolean);
+            const recruiter = beforeChunk.length > 0 ? beforeChunk[beforeChunk.length - 1] : "";
+            const recruiterParts = splitRecruiter(recruiter);
+            records.push({
+                index: records.length + 1,
+                date,
+                time,
+                title,
+                salary: salaryLine,
+                company,
+                companyTags,
+                interviewTime,
+                location,
+                status,
+                recruiter,
+                recruiterName: recruiterParts.name,
+                recruiterTitle: recruiterParts.title,
+                raw: block.slice(0, 500)
+            });
+        });
+        return records;
+    }
+
+    async function waitForInterviewText(timeoutMs: number): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (/\d{4}\.\d{2}\.\d{2}\s+\d{1,2}:\d{2}\s*面试/.test(document.body.innerText || "")) return true;
+            await bossChatWait(500);
+        }
+        return false;
+    }
+
+    async function collectBossInterview(overlay: HTMLElement): Promise<void> {
+        const currentPage = getRecommendPage();
+        const session = loadInterviewSession();
+        overlay.innerText = `Joblens 面试记录采集\n第 ${currentPage} 页加载中…`;
+
+        const hasRecords = await waitForInterviewText(15000);
+        const beforeCount = session.records.length;
+        const known = new Set(session.records.map(record => `${record.date}|${record.time}|${record.title}|${record.company}`));
+        if (hasRecords) {
+            const records = parseInterviewRecordsFromText(document.body.innerText || "");
+            records.forEach(record => {
+                const key = `${record.date}|${record.time}|${record.title}|${record.company}`;
+                if (known.has(key)) return;
+                known.add(key);
+                record.index = session.records.length + 1;
+                session.records.push(record);
+            });
+        }
+        const added = session.records.length - beforeCount;
+        if (added === 0) {
+            const stamp = bossChatTimestamp(new Date());
+            const probe = {
+                url: window.location.href,
+                bodyText: (document.body.innerText || "").slice(0, 6000)
+            };
+            await downloadTextFile(`BOSS_INTERVIEW_PROBE_${stamp}.json`, JSON.stringify(probe, null, 2), "application/json", true);
+        }
+        if (!session.pages.includes(currentPage)) session.pages.push(currentPage);
+        saveInterviewSession(session);
+
+        const total = Math.max(getRecommendTotalPages(), hasRecommendNextPage() ? currentPage + 1 : currentPage);
+        overlay.innerText = `Joblens 面试记录采集\n第 ${currentPage}/${total} 页\n已收集 ${session.records.length} 条`;
+
+        if (hasRecords && currentPage < total && added > 0) {
+            await bossChatWait(600);
+            const nextUrl = new URL(window.location.href);
+            nextUrl.searchParams.set("joblens_recommend", "1");
+            nextUrl.searchParams.set("page", String(currentPage + 1));
+            window.location.href = nextUrl.toString();
+            return;
+        }
+
+        const markdown = buildInterviewMarkdown(session.records, session.pages.sort((a, b) => a - b));
+        const stamp = bossChatTimestamp(new Date());
+        await downloadTextFile(`BOSS_INTERVIEW_${stamp}.md`, markdown, "text/markdown", true);
+        await downloadTextFile(`BOSS_INTERVIEW_${stamp}.json`, JSON.stringify(session.records, null, 2), "application/json", true);
+        try {
+            sessionStorage.removeItem(INTERVIEW_SESSION_KEY);
+        } catch {}
+        overlay.style.background = "green";
+        overlay.innerText = `✅ 面试记录采集完成\n${session.records.length} 条 / ${session.pages.length} 页`;
+    }
+
+    if (isBossInterviewMode()) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;top:10px;right:10px;background:#0f766e;color:white;padding:16px 20px;z-index:999999;font-weight:bold;border-radius:10px;max-width:360px;white-space:pre-line;";
+        overlay.innerText = "Joblens 面试记录采集\n启动中…";
+        document.body.appendChild(overlay);
+        setTimeout(() => {
+            collectBossInterview(overlay).catch(error => {
+                overlay.style.background = "#b91c1c";
+                overlay.innerText = `❌ 面试记录采集失败\n${error instanceof Error ? error.message : String(error)}`;
+            });
+        }, 3000);
+    }
+
+    if (isBossRecommendCollectMode() && !isBossInterviewMode()) {
         const overlay = document.createElement("div");
         overlay.style.cssText = "position:fixed;top:10px;right:10px;background:#0f766e;color:white;padding:16px 20px;z-index:999999;font-weight:bold;border-radius:10px;max-width:360px;white-space:pre-line;";
         overlay.innerText = "Joblens 推荐页采集\n启动中…";
