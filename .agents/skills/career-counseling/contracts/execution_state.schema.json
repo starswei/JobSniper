@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/career-counseling/contracts/execution_state.schema.json",
+  "title": "Optional career counseling execution checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "case_id",
+    "synthetic",
+    "decision_question",
+    "phase",
+    "mode",
+    "action",
+    "action_reason",
+    "recommendation_state",
+    "hard_gate",
+    "personal_information",
+    "events"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0"
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "synthetic": {
+      "type": "boolean"
+    },
+    "decision_question": {
+      "type": "string",
+      "minLength": 1
+    },
+    "phase": {
+      "enum": [
+        "S1",
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S6"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "independent",
+        "enhanced",
+        "degraded"
+      ]
+    },
+    "action": {
+      "enum": [
+        "research",
+        "ask_user",
+        "synthesize",
+        "hold_high_cost",
+        "recover",
+        "done"
+      ]
+    },
+    "action_reason": {
+      "type": "string",
+      "minLength": 10
+    },
+    "recommendation_state": {
+      "enum": [
+        "none",
+        "provisional",
+        "ready_for_client_decision",
+        "high_cost_blocked"
+      ]
+    },
+    "hard_gate": {
+      "enum": [
+        "unknown",
+        "open",
+        "cleared",
+        "blocked"
+      ]
+    },
+    "personal_information": {
+      "enum": [
+        "sufficient",
+        "missing_key_fact",
+        "declined",
+        "unknown"
+      ]
+    },
+    "high_cost_action": {
+      "type": "boolean",
+      "default": false
+    },
+    "critical_evidence_reviewed": {
+      "type": "boolean",
+      "default": false
+    },
+    "counterevidence_reviewed": {
+      "type": "boolean",
+      "default": false
+    },
+    "personal_constraints_confirmed": {
+      "type": "boolean",
+      "default": false
+    },
+    "preferences_confirmed": {
+      "type": "boolean",
+      "default": false
+    },
+    "research_stop_reason": {
+      "enum": [
+        "none",
+        "decisive_gate",
+        "low_marginal_value",
+        "resource_limit",
+        "user_stop",
+        "blocked_source",
+        "decision_delivered"
+      ]
+    },
+    "used_capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "research",
+          "evidence_validation",
+          "job_analysis",
+          "financial_calculation",
+          "career_state",
+          "decision_audit"
+        ]
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/event"
+      }
+    }
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "kind",
+        "outcome",
+        "description",
+        "timestamp"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "research",
+            "tool_call",
+            "calculation",
+            "human_confirmation",
+            "review",
+            "fallback",
+            "state_write"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "not_attempted",
+            "partial",
+            "declined"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 3
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "verification_level": {
+          "enum": [
+            "unverified",
+            "text_matched",
+            "substantive_reviewed"
+          ]
+        },
+        "capability": {
+          "enum": [
+            "research",
+            "evidence_validation",
+            "job_analysis",
+            "financial_calculation",
+            "career_state",
+            "decision_audit"
+          ]
+        }
+      }
+    }
+  }
+}

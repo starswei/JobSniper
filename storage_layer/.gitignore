@@ -2,6 +2,8 @@
 !.gitignore
 !personas/
 !personas/.gitignore
+!markets/
+!markets/.gitignore
 !positions/
 !positions/.gitignore
 !positions/boss_intelligence_vault/

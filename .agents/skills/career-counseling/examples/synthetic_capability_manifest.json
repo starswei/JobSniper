@@ -1,0 +1,30 @@
+{
+  "contract_version": "1.0.0",
+  "provider_id": "example-local",
+  "capabilities": [
+    {
+      "name": "research",
+      "availability": "unavailable",
+      "requires_authorization": false,
+      "deterministic": false,
+      "result_auditable": false,
+      "limits": "示例：此环境不提供外部检索"
+    },
+    {
+      "name": "financial_calculation",
+      "availability": "available",
+      "requires_authorization": false,
+      "deterministic": true,
+      "result_auditable": true,
+      "interface_version": "1.0.0"
+    },
+    {
+      "name": "career_state",
+      "availability": "requires_authorization",
+      "requires_authorization": true,
+      "deterministic": true,
+      "result_auditable": true,
+      "limits": "示例：未经许可不能保存私人资料"
+    }
+  ]
+}

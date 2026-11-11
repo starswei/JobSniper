@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/career-counseling/contracts/capability_manifest.schema.json",
+  "title": "Optional career counseling tool capability manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "provider_id",
+    "capabilities"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0.0"
+    },
+    "provider_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "availability",
+        "requires_authorization",
+        "deterministic",
+        "result_auditable"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "research",
+            "evidence_validation",
+            "job_analysis",
+            "financial_calculation",
+            "career_state",
+            "decision_audit"
+          ]
+        },
+        "availability": {
+          "enum": [
+            "available",
+            "degraded",
+            "unavailable",
+            "requires_authorization"
+          ]
+        },
+        "requires_authorization": {
+          "type": "boolean"
+        },
+        "deterministic": {
+          "type": "boolean"
+        },
+        "result_auditable": {
+          "type": "boolean"
+        },
+        "limits": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "interface_version": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "permission_scope": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    }
+  }
+}

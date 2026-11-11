@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0.0",
+  "case_id": "CASE-DEMO-001",
+  "synthetic_only": true,
+  "scope": {
+    "region": "虚构地区",
+    "decision_question": "虚构求职者应先验证采购协调岗位还是直接投入长期培训？",
+    "as_of_date": "2026-11-11",
+    "decision_by": "2026-12-11",
+    "target_pathways": ["虚构采购协调"]
+  },
+  "evidence": [
+    {
+      "evidence_id": "EV-JD-001",
+      "source_type": "synthetic",
+      "source_url": null,
+      "upstream_id": "fictional-job-sample",
+      "excerpt": "虚构岗位要求能进行供应进度对账并解决基础协同异常。",
+      "published_on": null,
+      "retrieved_on": "2026-11-11",
+      "region": "虚构地区",
+      "review_stage": "text_matched",
+      "synthetic": true
+    },
+    {
+      "evidence_id": "EV-SELF-001",
+      "source_type": "synthetic",
+      "source_url": null,
+      "upstream_id": "fictional-person",
+      "excerpt": "虚构求职者自称完成过仓储出入库对账与异常协调。",
+      "published_on": null,
+      "retrieved_on": "2026-11-11",
+      "region": "虚构地区",
+      "review_stage": "unreviewed",
+      "synthetic": true
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "CL-JD-001",
+      "statement": "虚构岗位材料声称需要采购协同与对账能力。",
+      "claim_type": "direct_fact",
+      "review_status": "unverified",
+      "critical_to_decision": true,
+      "evidence_ids": ["EV-JD-001"],
+      "counterevidence_ids": [],
+      "region": "虚构地区",
+      "as_of_date": "2026-11-11",
+      "limitations": "纯虚构演示，不能证明任何真实招聘要求。"
+    },
+    {
+      "claim_id": "CL-SELF-001",
+      "statement": "虚构求职者表示具备基础对账经验。",
+      "claim_type": "personal_fact",
+      "review_status": "unverified",
+      "critical_to_decision": false,
+      "evidence_ids": ["EV-SELF-001"],
+      "counterevidence_ids": [],
+      "region": "虚构地区",
+      "as_of_date": "2026-11-11",
+      "limitations": "仅为模拟自述，未测评。"
+    }
+  ],
+  "job_requirements": [
+    {
+      "requirement_id": "REQ-001",
+      "job_path": "虚构采购协调",
+      "description": "具备供应对账与异常协同任务经验",
+      "requirement_type": "core_skill",
+      "evidence_id": "EV-JD-001",
+      "gate_status": "unknown"
+    }
+  ],
+  "capability_observations": [
+    {
+      "observation_id": "OBS-001",
+      "skill": "基础对账",
+      "assessment_stage": "self_report",
+      "level": null,
+      "observed_on": "2026-11-11",
+      "evidence_ids": ["EV-SELF-001"]
+    }
+  ],
+  "recommendations": [
+    {
+      "recommendation_id": "REC-001",
+      "summary": "暂定先验证公开职位准入，并完成一个低成本独立任务样本。",
+      "status": "provisional",
+      "claim_ids": ["CL-JD-001", "CL-SELF-001"],
+      "critical_claim_ids": ["CL-JD-001"],
+      "hard_gate_status": "unresolved",
+      "personal_constraints_status": "unconfirmed",
+      "preferences_confirmed": false,
+      "counterevidence_reviewed": false,
+      "requires_high_cost_action": false,
+      "reversible": true,
+      "validation_action": "查询真实 JD 并制作可复核对账工作样本",
+      "invalidation_condition": "发现法律准入限制或真实需求不支持该入口",
+      "review_on": "2026-11-25"
+    }
+  ]
+}

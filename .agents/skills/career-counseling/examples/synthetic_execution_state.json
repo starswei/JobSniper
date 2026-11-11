@@ -1,0 +1,30 @@
+{
+  "contract_version": "1.0.0",
+  "case_id": "SYN-STATE-001",
+  "synthetic": true,
+  "decision_question": "虚构人物是否应该直接承担不可逆的大额培训支出？",
+  "phase": "S4",
+  "mode": "degraded",
+  "action": "hold_high_cost",
+  "action_reason": "尚未核实职业资格及可动用资金，因此只能进行可逆核验",
+  "recommendation_state": "high_cost_blocked",
+  "hard_gate": "unknown",
+  "personal_information": "missing_key_fact",
+  "high_cost_action": true,
+  "critical_evidence_reviewed": false,
+  "counterevidence_reviewed": false,
+  "personal_constraints_confirmed": false,
+  "preferences_confirmed": false,
+  "research_stop_reason": "blocked_source",
+  "used_capabilities": [],
+  "events": [
+    {
+      "event_id": "SYN-EVT-01",
+      "kind": "research",
+      "outcome": "failed",
+      "description": "示例：假定职业资格官方页面无法访问，未实际联网",
+      "timestamp": "2026-11-11T09:00:00Z",
+      "verification_level": "unverified"
+    }
+  ]
+}

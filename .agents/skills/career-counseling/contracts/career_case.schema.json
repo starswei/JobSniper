@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/career-counseling/career-case/v1.0.0",
+  "title": "Career Counseling Research and Decision Record",
+  "description": "Minimal auditable case snapshot; schema syntax does not verify external facts, consent, or recommendation quality.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "synthetic_only", "scope", "evidence", "claims", "job_requirements", "capability_observations", "recommendations"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "case_id": {"$ref": "#/$defs/identifier"},
+    "synthetic_only": {"type": "boolean"},
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["region", "decision_question", "as_of_date", "decision_by", "target_pathways"],
+      "properties": {
+        "region": {"type": "string", "minLength": 1},
+        "decision_question": {"type": "string", "minLength": 10},
+        "as_of_date": {"type": "string", "format": "date"},
+        "decision_by": {"type": "string", "format": "date"},
+        "target_pathways": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}},
+    "job_requirements": {"type": "array", "items": {"$ref": "#/$defs/job_requirement"}},
+    "capability_observations": {"type": "array", "items": {"$ref": "#/$defs/capability_observation"}},
+    "recommendations": {"type": "array", "items": {"$ref": "#/$defs/recommendation"}}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,63}$"},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["evidence_id", "source_type", "source_url", "upstream_id", "excerpt", "retrieved_on", "region", "review_stage", "synthetic"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/identifier"},
+        "source_type": {"enum": ["official_policy", "official_statistics", "company_job", "company_disclosure", "labor_market", "research", "interview", "user_material", "synthetic"]},
+        "source_url": {"type": ["string", "null"]},
+        "upstream_id": {"type": "string", "minLength": 1},
+        "excerpt": {"type": "string", "minLength": 8},
+        "published_on": {"type": ["string", "null"], "format": "date"},
+        "retrieved_on": {"type": "string", "format": "date"},
+        "region": {"type": "string", "minLength": 1},
+        "review_stage": {"enum": ["unreviewed", "text_matched", "substantive_reviewed"]},
+        "synthetic": {"type": "boolean"}
+      }
+    },
+    "claim": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "statement", "claim_type", "review_status", "critical_to_decision", "evidence_ids", "counterevidence_ids", "region", "as_of_date", "limitations"],
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/identifier"},
+        "statement": {"type": "string", "minLength": 8},
+        "claim_type": {"enum": ["direct_fact", "market_trend", "causal_inference", "forecast_scenario", "personal_fact", "skill_assessment"]},
+        "review_status": {"enum": ["unverified", "partial", "verified", "conflicted"]},
+        "critical_to_decision": {"type": "boolean"},
+        "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "counterevidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "region": {"type": "string", "minLength": 1},
+        "as_of_date": {"type": "string", "format": "date"},
+        "limitations": {"type": "string"},
+        "scenario_assumptions": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "job_requirement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requirement_id", "job_path", "description", "requirement_type", "evidence_id", "gate_status"],
+      "properties": {
+        "requirement_id": {"$ref": "#/$defs/identifier"},
+        "job_path": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 3},
+        "requirement_type": {"enum": ["hard_gate", "core_skill", "preferred"]},
+        "evidence_id": {"$ref": "#/$defs/identifier"},
+        "gate_status": {"enum": ["unknown", "confirmed", "not_applicable"]}
+      }
+    },
+    "capability_observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observation_id", "skill", "assessment_stage", "level", "observed_on", "evidence_ids"],
+      "properties": {
+        "observation_id": {"$ref": "#/$defs/identifier"},
+        "skill": {"type": "string", "minLength": 1},
+        "assessment_stage": {"enum": ["unassessed", "self_report", "work_sample_reviewed", "independently_assessed"]},
+        "level": {"type": ["integer", "null"], "minimum": 0, "maximum": 4},
+        "observed_on": {"type": "string", "format": "date"},
+        "evidence_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}}
+      }
+    },
+    "recommendation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recommendation_id", "summary", "status", "claim_ids", "critical_claim_ids", "hard_gate_status", "personal_constraints_status", "preferences_confirmed", "counterevidence_reviewed", "requires_high_cost_action", "reversible", "validation_action", "invalidation_condition", "review_on"],
+      "properties": {
+        "recommendation_id": {"$ref": "#/$defs/identifier"},
+        "summary": {"type": "string", "minLength": 8},
+        "status": {"enum": ["provisional", "ready_for_client_decision", "high_cost_blocked"]},
+        "claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "critical_claim_ids": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}},
+        "hard_gate_status": {"enum": ["cleared", "unresolved", "conflicted"]},
+        "personal_constraints_status": {"enum": ["confirmed", "unconfirmed"]},
+        "preferences_confirmed": {"type": "boolean"},
+        "counterevidence_reviewed": {"type": "boolean"},
+        "requires_high_cost_action": {"type": "boolean"},
+        "reversible": {"type": "boolean"},
+        "validation_action": {"type": "string", "minLength": 3},
+        "invalidation_condition": {"type": "string", "minLength": 3},
+        "review_on": {"type": "string", "format": "date"}
+      }
+    }
+  }
+}
