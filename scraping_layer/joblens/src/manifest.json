@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Joblens",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Next-generation recruitment intelligence harvesting engine.",
   "author": "stars-wei",
   "homepage_url": "https://github.com/stars-wei/JobSniper",

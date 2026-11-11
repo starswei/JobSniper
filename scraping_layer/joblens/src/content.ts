@@ -2652,6 +2652,455 @@ declare global {
         chrome.runtime.sendMessage({ action: "closeCurrentTab" }).catch(() => { window.close(); });
     }
 
+    // --- BOSS 直聘聊天采集 ---
+    type BossChatMessage = {
+        sender: "me" | "other" | "system" | "unknown";
+        text: string;
+        time: string;
+    };
+
+    type BossChatConversation = {
+        index: number;
+        name: string;
+        company: string;
+        preview: string;
+        time: string;
+        unread: string;
+        lines: string[];
+        messages: BossChatMessage[];
+    };
+
+    function isBossChatCollectMode(): boolean {
+        if (!isBossPage) return false;
+        if (!window.location.pathname.includes("/web/geek/chat")) return false;
+        return new URLSearchParams(window.location.search).has("joblens_chat_collect");
+    }
+
+    function bossChatWait(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    function bossChatText(el: Element | null | undefined): string {
+        return cleanText((el as HTMLElement | null)?.innerText || "");
+    }
+
+    function bossChatPick(selectors: string[], root: ParentNode = document): HTMLElement | null {
+        for (const selector of selectors) {
+            const found = root.querySelector(selector) as HTMLElement | null;
+            if (found) return found;
+        }
+        return null;
+    }
+
+    function bossChatTimestamp(date: Date): string {
+        const pad = (value: number) => value.toString().padStart(2, "0");
+        return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+    }
+
+    function bossChatScrollables(): HTMLElement[] {
+        return Array.from(document.querySelectorAll<HTMLElement>("div,ul,section")).filter(el => {
+            const style = getComputedStyle(el);
+            const scrollable = style.overflowY === "auto" || style.overflowY === "scroll";
+            return scrollable && el.scrollHeight > el.clientHeight + 20;
+        });
+    }
+
+    function findBossChatList(): HTMLElement | null {
+        const known = bossChatPick([
+            ".chat-user-list", ".user-list", ".chat-list", ".conversation-list",
+            ".geek-chat-list", ".im-user-list", "[class*='user-list']", "[class*='chat-list']"
+        ]);
+        if (known) return known;
+        const candidates = bossChatScrollables().filter(el => {
+            const rect = el.getBoundingClientRect();
+            return rect.width >= 180 && rect.width <= 460 && rect.height >= 250 && el.children.length >= 2;
+        });
+        candidates.sort((a, b) => b.children.length - a.children.length);
+        return candidates[0] || null;
+    }
+
+    function bossChatItems(list: HTMLElement): HTMLElement[] {
+        const content = list.querySelector<HTMLElement>(".user-list-content") || list;
+        const candidates = Array.from(content.querySelectorAll<HTMLElement>("*")).filter(el => {
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 240 || rect.width > 430 || rect.height < 40 || rect.height > 140) return false;
+            const lines = ((el as HTMLElement).innerText || "").split(/\n+/).map(line => line.trim()).filter(Boolean);
+            if (lines.length < 2) return false;
+            return /^(\d{1,2}:\d{2}|昨天|前天|星期[一二三四五六日天]|\d{1,2}月\d{1,2}日)/.test(lines[0]);
+        });
+        const deepest = candidates.filter(el => !candidates.some(other => other !== el && el.contains(other)));
+        const seen = new Set<string>();
+        return deepest.filter(el => {
+            const key = (el.innerText || "").trim();
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    function parseBossChatItem(el: HTMLElement, index: number): BossChatConversation {
+        const lines = ((el as HTMLElement).innerText || "")
+            .split(/\n+/)
+            .map(line => line.trim())
+            .filter(Boolean);
+        const timeLine = lines.find(line => /^(\d{1,2}:\d{2}|昨天|前天|星期[一二三四五六日天]|\d{1,2}月\d{1,2}日)/.test(line)) || "";
+        const status = lines.find(line => /^\[(已读|送达|未读|新招呼)\]$/.test(line)) || "";
+        const titleLine = lines.find(line => line !== timeLine && line !== status) || "";
+        const preview = lines
+            .filter(line => line !== timeLine && line !== titleLine && line !== status)
+            .sort((a, b) => b.length - a.length)[0] || "";
+        const unreadEl = el.querySelector("[class*='badge'], [class*='unread'], [class*='count']");
+        const unreadText = bossChatText(unreadEl);
+        const unread = /^\d{1,3}$/.test(unreadText) ? unreadText : "";
+        return {
+            index,
+            name: titleLine,
+            company: "",
+            preview,
+            time: timeLine,
+            unread,
+            lines,
+            messages: []
+        };
+    }
+
+    function findBossChatMessageContainer(): HTMLElement | null {
+        const panel = document.querySelector<HTMLElement>(".chat-conversation");
+        if (panel) {
+            if (panel.querySelector(".chat-no-data")) return null;
+            return panel;
+        }
+        const known = bossChatPick([
+            ".chat-record", ".message-list", ".chat-message", ".im-chat-list",
+            "[class*='message-list']", "[class*='chat-record']", "[class*='msg-list']"
+        ]);
+        if (known) return known;
+        const candidates = bossChatScrollables()
+            .filter(el => {
+                const rect = el.getBoundingClientRect();
+                return rect.width > 420 && rect.height > 250;
+            })
+            .sort((a, b) => b.querySelectorAll("*").length - a.querySelectorAll("*").length);
+        return candidates[0] || null;
+    }
+
+    function bossChatMessageNodes(container: HTMLElement): HTMLElement[] {
+        const imList = container.querySelector<HTMLElement>(".im-list");
+        if (imList) {
+            const items = Array.from(imList.querySelectorAll<HTMLElement>("li.message-item"));
+            if (items.length > 0) return items;
+        }
+        const selectors = [
+            ".message-item", ".msg-item", ".chat-message-item",
+            "[class*='message-item']", "[class*='msg-item']"
+        ];
+        for (const selector of selectors) {
+            const nodes = Array.from(container.querySelectorAll<HTMLElement>(selector)).filter(el => bossChatText(el).length > 0);
+            if (nodes.length >= 2) return nodes;
+        }
+        const geometric = Array.from(container.querySelectorAll<HTMLElement>("*")).filter(el => {
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 120 || rect.width > 720 || rect.height < 20 || rect.height > 320) return false;
+            return bossChatText(el).length > 0;
+        });
+        const deepest = geometric.filter(el => !geometric.some(other => other !== el && el.contains(other)));
+        if (deepest.length >= 2) return deepest;
+        return Array.from(container.children).filter((el): el is HTMLElement => el instanceof HTMLElement && bossChatText(el).length > 0);
+    }
+
+    function bossChatSender(el: HTMLElement, container: HTMLElement): "me" | "other" | "system" | "unknown" {
+        const ownClass = String(el.className || "").toLowerCase();
+        if (ownClass.includes("item-myself")) return "me";
+        if (ownClass.includes("item-system")) return "system";
+        if (ownClass.includes("item-friend")) return "other";
+        const classTokens = `${el.className || ""} ${el.parentElement?.className || ""}`
+            .toLowerCase()
+            .split(/\s+/)
+            .filter(Boolean);
+        const isMe = classTokens.some(token => /(^|-)(self|mine|myself|right|from-me|item-myself)$/.test(token));
+        const isOther = classTokens.some(token => /(^|-)(other|friend|left|from-other|item-friend)$/.test(token));
+        if (isMe) return "me";
+        if (isOther) return "other";
+        if (classTokens.some(token => token.includes("system") || token.includes("notice"))) return "system";
+        const rect = el.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+        if (rect.width > 0 && containerRect.width > 0) {
+            const elCenter = rect.left + rect.width / 2;
+            const containerCenter = containerRect.left + containerRect.width / 2;
+            if (elCenter > containerCenter + containerRect.width * 0.08) return "me";
+            if (elCenter < containerCenter - containerRect.width * 0.08) return "other";
+        }
+        return "unknown";
+    }
+
+    async function bossChatLoadHistory(container: HTMLElement, overlay?: HTMLElement): Promise<void> {
+        const imList = container.querySelector<HTMLElement>(".im-list") || container;
+        let scroller: HTMLElement | null = imList;
+        while (scroller && scroller !== document.body) {
+            const style = getComputedStyle(scroller);
+            if ((style.overflowY === "auto" || style.overflowY === "scroll") && scroller.scrollHeight > scroller.clientHeight + 10) break;
+            scroller = scroller.parentElement;
+        }
+        const target = scroller && scroller !== document.body ? scroller : container;
+        let lastHeight = target.scrollHeight;
+        for (let round = 0; round < 10; round++) {
+            target.scrollTop = 0;
+            await bossChatWait(600);
+            const height = target.scrollHeight;
+            if (height === lastHeight) break;
+            lastHeight = height;
+            if (overlay) overlay.innerText = `Joblens 聊天采集\n加载历史消息… 第 ${round + 1} 轮`;
+        }
+    }
+
+    async function collectBossChatThread(overlay?: HTMLElement): Promise<BossChatMessage[]> {
+        const container = findBossChatMessageContainer();
+        if (!container) return [];
+        await bossChatLoadHistory(container, overlay);
+        const nodes = bossChatMessageNodes(container);
+        const messages: BossChatMessage[] = [];
+        for (const node of nodes) {
+            const raw = ((node as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+            if (!raw) continue;
+            const sender = bossChatSender(node, container);
+            const timeMatch = raw.match(/^((?:\d{2}-\d{2}\s+)?\d{1,2}:\d{2})\s*/)
+                || raw.match(/((?:\d{2}-\d{2}\s+)?\d{1,2}:\d{2})/);
+            const time = timeMatch ? timeMatch[1] : "";
+            let text = raw;
+            if (timeMatch && raw.indexOf(timeMatch[1]) === 0) text = raw.slice(timeMatch[0].length);
+            text = text.replace(/^\[?(已读|送达|未读)\]?\s*/, "").trim();
+            if (!text) continue;
+            const previous = messages[messages.length - 1];
+            if (previous && previous.sender === sender && previous.text === text) continue;
+            messages.push({ sender, text, time });
+        }
+        return messages;
+    }
+
+    async function waitForBossChatList(timeoutMs: number): Promise<HTMLElement | null> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const list = findBossChatList();
+            if (list) return list;
+            await bossChatWait(500);
+        }
+        return null;
+    }
+
+    function bossChatScrollChain(list: HTMLElement): HTMLElement[] {
+        const ul = list.querySelector<HTMLElement>(".user-list-content > ul")
+            || list.querySelector<HTMLElement>("ul")
+            || list;
+        const chain: HTMLElement[] = [];
+        let current: HTMLElement | null = ul;
+        while (current && current !== document.body) {
+            chain.push(current);
+            current = current.parentElement;
+        }
+        return chain;
+    }
+
+    async function bossChatCollectAllMetadata(overlay?: HTMLElement): Promise<BossChatConversation[]> {
+        let list = findBossChatList();
+        if (!list) return [];
+        const chain = bossChatScrollChain(list);
+        const scroller = chain.find(el => el.scrollHeight > el.clientHeight + 100) || chain[0] || list;
+        const collected = new Map<string, BossChatConversation>();
+        let order = 0;
+        for (let round = 0; round < 120; round++) {
+            const current = findBossChatList();
+            if (!current) break;
+            bossChatItems(current).forEach(el => {
+                const conversation = parseBossChatItem(el, order + 1);
+                const key = conversation.lines.join("|");
+                if (!key || collected.has(key)) return;
+                order += 1;
+                conversation.index = order;
+                collected.set(key, conversation);
+            });
+            const before = scroller.scrollTop;
+            const step = Math.max(240, scroller.clientHeight - 80);
+            scroller.scrollTop = Math.min(before + step, scroller.scrollHeight);
+            scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+            await bossChatWait(600);
+            if (overlay) overlay.innerText = `Joblens 聊天采集\n已读取 ${collected.size} 个会话…`;
+            if (scroller.scrollTop === before) {
+                await bossChatWait(800);
+                if (scroller.scrollTop === before) break;
+            }
+        }
+        scroller.scrollTop = 0;
+        scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+        await bossChatWait(500);
+        return Array.from(collected.values());
+    }
+
+    async function collectBossChat(overlay: HTMLElement | undefined, collectAll: boolean): Promise<BossChatConversation[]> {
+        const list = await waitForBossChatList(15000);
+        const conversations = list
+            ? (collectAll
+                ? await bossChatCollectAllMetadata(overlay)
+                : bossChatItems(list).map((item, index) => parseBossChatItem(item, index + 1)))
+            : [];
+        if (conversations.length === 0) {
+            const messages = await collectBossChatThread(overlay);
+            if (messages.length === 0) return [];
+            return [{
+                index: 1,
+                name: "当前会话",
+                company: "",
+                preview: "",
+                time: "",
+                unread: "",
+                lines: [],
+                messages
+            }];
+        }
+
+        let messages = await collectBossChatThread(overlay);
+        if (messages.length === 0) {
+            const currentList = findBossChatList();
+            const currentItems = currentList ? bossChatItems(currentList) : [];
+            if (currentItems.length > 0) {
+                currentItems[0].click();
+                await bossChatWait(1800);
+                messages = await collectBossChatThread(overlay);
+            }
+        }
+        if (messages.length > 0) {
+            const openName = bossChatText(document.querySelector(".chat-conversation .name-content"));
+            let targetIndex = openName ? conversations.findIndex(item => item.name.includes(openName)) : 0;
+            if (targetIndex < 0) targetIndex = 0;
+            conversations[targetIndex].messages = messages;
+        }
+        return conversations;
+    }
+
+    function buildBossChatMarkdown(conversations: BossChatConversation[], collectedAt: Date, collectAll: boolean): string {
+        const senderLabel = (sender: BossChatMessage["sender"]): string => {
+            if (sender === "me") return "我";
+            if (sender === "other") return "对方";
+            if (sender === "system") return "系统";
+            return "未知";
+        };
+        let content = `# BOSS直聘聊天记录\n\n`;
+        content += `- 采集时间：${collectedAt.toLocaleString()}\n`;
+        content += `- 会话数：${conversations.length}\n`;
+        content += `- 采集模式：${collectAll ? "全部会话列表 + 当前会话消息" : "当前列表窗口 + 当前会话消息"}\n`;
+        content += `- 页面：${window.location.href}\n\n`;
+        conversations.forEach(conversation => {
+            content += `---\n\n## ${conversation.index}. ${conversation.name || "未命名会话"}${conversation.company ? ` · ${conversation.company}` : ""}\n\n`;
+            if (conversation.preview) content += `- 最后消息：${conversation.preview}\n`;
+            if (conversation.time) content += `- 时间：${conversation.time}\n`;
+            if (conversation.unread) content += `- 未读：${conversation.unread}\n`;
+            content += `\n### 消息\n\n`;
+            if (conversation.messages.length === 0) {
+                content += `（未采集到消息，可能是未点开会话、消息未加载，或页面结构变化）\n\n`;
+            } else {
+                conversation.messages.forEach(message => {
+                    content += `- **${senderLabel(message.sender)}**${message.time ? ` ${message.time}` : ""}：${message.text}\n`;
+                });
+                content += `\n`;
+            }
+        });
+        return content;
+    }
+
+    function bossChatDomProbe(): Array<Record<string, unknown>> {
+        const rows: Array<Record<string, unknown>> = [];
+        document.querySelectorAll<HTMLElement>("[class]").forEach(el => {
+            const cls = String(el.className || "");
+            if (!/chat|message|msg|user|conversation|record|im-/i.test(cls)) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 40 || rect.height < 20) return;
+            rows.push({
+                tag: el.tagName,
+                cls: cls.slice(0, 160),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+                children: el.children.length,
+                text: bossChatText(el).slice(0, 100)
+            });
+        });
+        return rows.slice(0, 300);
+    }
+
+    function bossChatSubtreeProbe(root: HTMLElement | null, label: string): Record<string, unknown> {
+        if (!root) return { label, missing: true, rows: [] };
+        const rows: Array<Record<string, unknown>> = [];
+        const walk = (el: Element, depth: number): void => {
+            if (depth > 7 || rows.length >= 250) return;
+            const rect = el.getBoundingClientRect();
+            const text = ((el as HTMLElement).innerText || "").replace(/\s+/g, " ").trim();
+            if (rect.width >= 20 && rect.height >= 10 && text) {
+                rows.push({
+                    depth,
+                    tag: el.tagName,
+                    cls: String((el as HTMLElement).className || "").slice(0, 140),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                    children: el.children.length,
+                    text: text.slice(0, 90)
+                });
+            }
+            Array.from(el.children).forEach(child => walk(child, depth + 1));
+        };
+        walk(root, 0);
+        return { label, rows };
+    }
+
+    async function exportBossChat(overlay: HTMLElement): Promise<void> {
+        const params = new URLSearchParams(window.location.search);
+        const rawMode = (params.get("joblens_chat_collect") || "").toLowerCase();
+        const collectAll = rawMode === "all" || params.get("joblens_chat_all") === "1";
+        const conversations = await collectBossChat(overlay, collectAll);
+        const now = new Date();
+        const timestamp = bossChatTimestamp(now);
+        const markdown = buildBossChatMarkdown(conversations, now, collectAll);
+        const mdResult = await downloadTextFile(`BOSS_CHAT_${timestamp}.md`, markdown, "text/markdown", true);
+        if (params.get("joblens_chat_debug") === "1") {
+            const payload = {
+                collectedAt: now.toISOString(),
+                url: window.location.href,
+                mode: collectAll ? "all" : "current",
+                conversations,
+                domProbe: bossChatDomProbe(),
+                listProbe: bossChatSubtreeProbe(document.querySelector<HTMLElement>(".chat-user"), "chat-user"),
+                threadProbe: bossChatSubtreeProbe(document.querySelector<HTMLElement>(".chat-conversation"), "chat-conversation"),
+                scrollProbe: (() => {
+                    const list = findBossChatList();
+                    if (!list) return [];
+                    return bossChatScrollChain(list).map(el => ({
+                        tag: el.tagName,
+                        cls: String(el.className || "").slice(0, 120),
+                        scrollTop: el.scrollTop,
+                        scrollHeight: el.scrollHeight,
+                        clientHeight: el.clientHeight,
+                        overflowY: getComputedStyle(el).overflowY
+                    }));
+                })()
+            };
+            await downloadTextFile(`BOSS_CHAT_${timestamp}.json`, JSON.stringify(payload, null, 2), "application/json", true);
+        }
+        overlay.style.background = mdResult?.success ? "green" : "#b91c1c";
+        overlay.innerText = mdResult?.success
+            ? `✅ 聊天采集完成\n${conversations.length} 个会话`
+            : `⚠️ 聊天采集完成但下载失败\n${conversations.length} 个会话`;
+    }
+
+    if (isBossChatCollectMode()) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;top:10px;right:10px;background:#7c3aed;color:white;padding:16px 20px;z-index:999999;font-weight:bold;border-radius:10px;max-width:360px;white-space:pre-line;";
+        overlay.innerText = "Joblens 聊天采集\n等待聊天界面加载…";
+        document.body.appendChild(overlay);
+        setTimeout(() => {
+            exportBossChat(overlay).catch(error => {
+                overlay.style.background = "#b91c1c";
+                overlay.innerText = `❌ 聊天采集失败\n${error instanceof Error ? error.message : String(error)}`;
+            });
+        }, 3000);
+    }
+
     // Main entry point logic...
     if (isKeywordDiscoveryMode()) {
         const overlay = document.createElement('div');
