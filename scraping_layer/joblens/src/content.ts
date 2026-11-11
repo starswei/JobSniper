@@ -3101,6 +3101,191 @@ declare global {
         }, 3000);
     }
 
+    // --- BOSS 直聘推荐页分页采集 ---
+    type RecommendJob = {
+        title: string;
+        company: string;
+        salary: string;
+        exp: string;
+        edu: string;
+        area: string;
+        city: string;
+        url: string;
+    };
+
+    const RECOMMEND_SESSION_KEY = "joblens_recommend_session_v1";
+
+    function isBossRecommendCollectMode(): boolean {
+        if (!isBossPage) return false;
+        if (!window.location.pathname.includes("/web/geek/recommend")) return false;
+        return new URLSearchParams(window.location.search).has("joblens_recommend");
+    }
+
+    function splitRecommendTitle(rawTitle: string): { title: string; area: string } {
+        const match = rawTitle.match(/^(.*?)\s*\[\s*([^\]]+)\s*\]\s*$/);
+        if (match) return { title: match[1].trim(), area: match[2].trim() };
+        return { title: rawTitle.trim(), area: "" };
+    }
+
+    function getRecommendPage(): number {
+        const page = parseInt(new URLSearchParams(window.location.search).get("page") || "1", 10);
+        return isNaN(page) || page < 1 ? 1 : page;
+    }
+
+    function hasRecommendNextPage(): boolean {
+        const next = document.querySelector<HTMLElement>("a[class*='next'], [class*='next'], [class*='page-next']");
+        if (!next) return false;
+        if (next.classList.contains("disabled") || next.getAttribute("aria-disabled") === "true") return false;
+        return true;
+    }
+
+    function isRecommendEmptyState(): boolean {
+        const text = document.body.innerText || "";
+        if (text.includes("暂时没有被Boss发现")) return true;
+        if (text.includes("查看推荐岗位") && document.querySelectorAll("a[href*='/job_detail/']").length < 2) return true;
+        return false;
+    }
+
+    function getRecommendTotalPages(): number {
+        let total = 1;
+        document.querySelectorAll<HTMLAnchorElement>("a[href*='page=']").forEach(anchor => {
+            const value = new URL(anchor.href).searchParams.get("page");
+            const page = value ? parseInt(value, 10) : NaN;
+            if (!isNaN(page)) total = Math.max(total, page);
+        });
+        document.querySelectorAll<HTMLElement>("[class*='page'] li, [class*='pagination'] li, [class*='page'] a").forEach(el => {
+            const page = parseInt(cleanText(el.innerText), 10);
+            if (!isNaN(page)) total = Math.max(total, page);
+        });
+        return total;
+    }
+
+    function loadRecommendSession(): { jobs: RecommendJob[]; pages: number[] } {
+        try {
+            const raw = sessionStorage.getItem(RECOMMEND_SESSION_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed.jobs) && Array.isArray(parsed.pages)) return parsed;
+            }
+        } catch {}
+        return { jobs: [], pages: [] };
+    }
+
+    function saveRecommendSession(session: { jobs: RecommendJob[]; pages: number[] }): void {
+        try {
+            sessionStorage.setItem(RECOMMEND_SESSION_KEY, JSON.stringify(session));
+        } catch {}
+    }
+
+    async function waitForRecommendCards(timeoutMs: number): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (document.querySelectorAll("a[href*='/job_detail/']").length >= 2) return true;
+            await bossChatWait(500);
+        }
+        return false;
+    }
+
+    function buildRecommendMarkdown(jobs: RecommendJob[], pages: number[], cityFilter: string): string {
+        let content = `# BOSS直聘推荐岗位\n\n`;
+        content += `- 采集时间：${new Date().toLocaleString()}\n`;
+        content += `- 岗位数：${jobs.length}\n`;
+        content += `- 已采集页：${pages.join(", ")}\n`;
+        content += `- 城市筛选：${cityFilter || "不限"}\n`;
+        content += `- 页面：${window.location.href}\n\n`;
+        jobs.forEach((job, index) => {
+            content += `### ${index + 1}. ${job.title}\n`;
+            content += `- 公司：${job.company || "未知"}\n`;
+            content += `- 薪资：**${job.salary}**\n`;
+            content += `- 经验：${job.exp || "未知"}\n`;
+            content += `- 学历：${job.edu || "未知"}\n`;
+            content += `- 地点：${job.area || "未知"}\n`;
+            content += `- 链接：[查看详情](${job.url})\n\n`;
+        });
+        return content;
+    }
+
+    async function collectBossRecommend(overlay: HTMLElement): Promise<void> {
+        const params = new URLSearchParams(window.location.search);
+        const cityFilter = params.get("joblens_city") || "";
+        const currentPage = getRecommendPage();
+        const session = loadRecommendSession();
+
+        overlay.innerText = `Joblens 推荐页采集\n第 ${currentPage} 页加载中…`;
+        const hasCards = await waitForRecommendCards(15000);
+        if (hasCards) {
+            await scanAndHarvestBoss(overlay);
+        }
+
+        const jobs: RecommendJob[] = Array.from(harvestedJobs.values()).map((job: any) => {
+            const parsed = splitRecommendTitle(String(job.title || ""));
+            const area = String(job.area && job.area !== "未知" ? job.area : parsed.area || "");
+            return {
+                title: parsed.title,
+                company: String(job.company || ""),
+                salary: String(job.salary || "面议"),
+                exp: String(job.exp || ""),
+                edu: String(job.edu || ""),
+                area,
+                city: area.split("·")[0] || "",
+                url: String(job.url || "")
+            };
+        }).filter(job => {
+            if (!job.url || !job.title) return false;
+            if (cityFilter && !job.area.startsWith(cityFilter)) return false;
+            return true;
+        });
+
+        const beforeCount = session.jobs.length;
+        const known = new Set(session.jobs.map(job => job.url));
+        jobs.forEach(job => {
+            if (!known.has(job.url)) {
+                known.add(job.url);
+                session.jobs.push(job);
+            }
+        });
+        const added = session.jobs.length - beforeCount;
+        if (!session.pages.includes(currentPage)) session.pages.push(currentPage);
+        saveRecommendSession(session);
+
+        const emptyState = isRecommendEmptyState();
+        const reachedEnd = !hasCards || emptyState || (currentPage > 1 && added === 0);
+        const total = Math.max(getRecommendTotalPages(), hasRecommendNextPage() ? currentPage + 1 : currentPage);
+        overlay.innerText = `Joblens 推荐页采集\n第 ${currentPage}/${total} 页\n已收集 ${session.jobs.length} 个岗位${emptyState ? "\n已到最后一页" : ""}`;
+
+        if (!reachedEnd && currentPage < total) {
+            await bossChatWait(600);
+            const nextUrl = new URL(window.location.href);
+            nextUrl.searchParams.set("joblens_recommend", "1");
+            nextUrl.searchParams.set("page", String(currentPage + 1));
+            if (cityFilter) nextUrl.searchParams.set("joblens_city", cityFilter);
+            window.location.href = nextUrl.toString();
+            return;
+        }
+
+        const markdown = buildRecommendMarkdown(session.jobs, session.pages.sort((a, b) => a - b), cityFilter);
+        const stamp = bossChatTimestamp(new Date());
+        await downloadTextFile(`BOSS_RECOMMEND_${stamp}.md`, markdown, "text/markdown", true);
+        try {
+            sessionStorage.removeItem(RECOMMEND_SESSION_KEY);
+        } catch {}
+        overlay.style.background = "green";
+        overlay.innerText = `✅ 推荐页采集完成\n${session.jobs.length} 个岗位 / ${session.pages.length} 页`;
+    }
+
+    if (isBossRecommendCollectMode()) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;top:10px;right:10px;background:#0f766e;color:white;padding:16px 20px;z-index:999999;font-weight:bold;border-radius:10px;max-width:360px;white-space:pre-line;";
+        overlay.innerText = "Joblens 推荐页采集\n启动中…";
+        document.body.appendChild(overlay);
+        setTimeout(() => {
+            collectBossRecommend(overlay).catch(error => {
+                overlay.style.background = "#b91c1c";
+                overlay.innerText = `❌ 推荐页采集失败\n${error instanceof Error ? error.message : String(error)}`;
+            });
+        }, 3000);
+    }
+
     // Main entry point logic...
     if (isKeywordDiscoveryMode()) {
         const overlay = document.createElement('div');
